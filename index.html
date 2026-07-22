@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Voiceover — a free, offline-capable text-to-speech app that runs entirely in your browser." />
+  <title>Voiceover — Text to Speech</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔊</text></svg>" />
+</head>
+<body>
+  <main class="app">
+    <header class="app-header">
+      <h1><span class="logo" aria-hidden="true">🔊</span> Voiceover</h1>
+      <p class="tagline">Turn any text into speech — right in your browser. Nothing is uploaded anywhere.</p>
+    </header>
+
+    <section class="panel" aria-label="Text input">
+      <div class="input-toolbar">
+        <label for="text-input" class="visually-hidden">Text to speak</label>
+        <button id="sample-btn" class="btn btn-ghost" type="button" title="Insert sample text">Sample text</button>
+        <button id="clear-btn" class="btn btn-ghost" type="button" title="Clear text">Clear</button>
+        <span id="char-count" class="char-count" aria-live="polite">0 characters</span>
+      </div>
+      <textarea
+        id="text-input"
+        placeholder="Type or paste the text you want to hear…"
+        spellcheck="true"
+        autofocus
+      ></textarea>
+      <div id="highlight-view" class="highlight-view" hidden aria-hidden="true"></div>
+    </section>
+
+    <section class="panel controls" aria-label="Voice settings">
+      <div class="control-row">
+        <label for="voice-select">Voice</label>
+        <select id="voice-select"></select>
+      </div>
+
+      <div class="sliders">
+        <div class="control-row">
+          <label for="rate">Speed <output id="rate-value" for="rate">1.0×</output></label>
+          <input type="range" id="rate" min="0.5" max="2" step="0.1" value="1" />
+        </div>
+        <div class="control-row">
+          <label for="pitch">Pitch <output id="pitch-value" for="pitch">1.0</output></label>
+          <input type="range" id="pitch" min="0.5" max="2" step="0.1" value="1" />
+        </div>
+        <div class="control-row">
+          <label for="volume">Volume <output id="volume-value" for="volume">100%</output></label>
+          <input type="range" id="volume" min="0" max="1" step="0.05" value="1" />
+        </div>
+      </div>
+
+      <button id="reset-btn" class="btn btn-ghost" type="button">Reset settings</button>
+    </section>
+
+    <section class="panel playback" aria-label="Playback controls">
+      <button id="speak-btn" class="btn btn-primary" type="button">
+        <span class="btn-icon" aria-hidden="true">▶</span> Speak
+      </button>
+      <button id="pause-btn" class="btn" type="button" disabled>
+        <span class="btn-icon" aria-hidden="true">⏸</span> Pause
+      </button>
+      <button id="stop-btn" class="btn" type="button" disabled>
+        <span class="btn-icon" aria-hidden="true">⏹</span> Stop
+      </button>
+      <p id="status" class="status" role="status" aria-live="polite">Ready</p>
+    </section>
+
+    <footer class="app-footer">
+      <p>
+        Tip: press <kbd>Ctrl</kbd>+<kbd>Enter</kbd> (or <kbd>⌘</kbd>+<kbd>Enter</kbd>) to speak.
+        Powered by your browser's built-in speech engine.
+      </p>
+    </footer>
+  </main>
+
+  <div id="unsupported" class="unsupported" hidden>
+    <p>
+      Sorry — your browser doesn't support the Web Speech API.
+      Try a recent version of Chrome, Edge, or Safari.
+    </p>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
