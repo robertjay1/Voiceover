@@ -1,0 +1,173 @@
+"""Voice bank (reusable named voice profiles) and cast files (speaker -> voice).
+
+The bank is your personal library of narrator voices — build it once,
+reuse it across every book:
+
+    voiceover bank add gruff-captain --engine edge --voice en-GB-RyanNeural --rate 0.92
+
+A cast file maps the speakers found in a specific book to voices. Values
+may be a bank profile name, a raw engine voice name, or an inline object:
+
+    {
+      "narrator": "en-US-AndrewMultilingualNeural",
+      "Elias": "gruff-captain",
+      "Mira": {"engine": "edge", "voice": "en-US-EmmaMultilingualNeural", "rate": 1.05}
+    }
+
+Speakers missing from the cast are auto-assigned distinct voices from a
+per-engine pool, deterministically, in order of first appearance.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+
+from .engines import create_engine
+from .engines.base import EngineError, TTSEngine
+
+DEFAULT_BANK_PATH = Path("~/.voiceover/voicebank.json")
+
+DEFAULT_VOICES = {
+    "edge": "en-US-AndrewMultilingualNeural",
+    "espeak": "en-us",
+    "piper": "en_US-lessac-medium",
+}
+
+# Distinct-sounding voices for auto-assignment, most natural first.
+AUTO_POOLS = {
+    "edge": [
+        "en-US-AndrewMultilingualNeural",
+        "en-US-AvaMultilingualNeural",
+        "en-GB-RyanNeural",
+        "en-US-EmmaMultilingualNeural",
+        "en-GB-SoniaNeural",
+        "en-US-BrianMultilingualNeural",
+        "en-AU-NatashaNeural",
+        "en-US-ChristopherNeural",
+        "en-GB-MaisieNeural",
+        "en-US-MichelleNeural",
+        "en-AU-WilliamNeural",
+        "en-IE-EmilyNeural",
+    ],
+    "espeak": ["en-us", "en+f3", "en+m3", "en+f4", "en+m7", "en+f2", "en+croak"],
+    # Piper voices are local model files; auto-assignment can't invent
+    # them, so every speaker must be cast explicitly (or share one model).
+    "piper": [],
+}
+
+
+@dataclass
+class VoiceProfile:
+    engine: str
+    voice: str | None = None
+    rate: float = 1.0
+    volume: float = 1.0
+    model_dir: str | None = None
+
+    def key(self) -> str:
+        """Stable identity used in chunk cache filenames."""
+        raw = f"{self.engine}:{self.voice}:{self.rate}:{self.volume}"
+        return re.sub(r"[^\w+-]+", "_", raw)
+
+    def create(self) -> TTSEngine:
+        options: dict = {"voice": self.voice, "rate": self.rate}
+        if self.engine == "edge":
+            options["volume"] = self.volume
+        if self.engine == "piper":
+            options["model_dir"] = self.model_dir
+        return create_engine(self.engine, **options)
+
+    def label(self) -> str:
+        rate = f" @{self.rate}x" if self.rate != 1.0 else ""
+        return f"{self.engine}:{self.voice}{rate}"
+
+
+# ---------- Voice bank ----------
+
+
+def load_bank(path: Path | None = None) -> dict[str, VoiceProfile]:
+    bank_path = Path(path or DEFAULT_BANK_PATH).expanduser()
+    if not bank_path.is_file():
+        return {}
+    data = json.loads(bank_path.read_text(encoding="utf-8"))
+    return {name: VoiceProfile(**profile) for name, profile in data.items()}
+
+
+def save_bank(bank: dict[str, VoiceProfile], path: Path | None = None) -> Path:
+    bank_path = Path(path or DEFAULT_BANK_PATH).expanduser()
+    bank_path.parent.mkdir(parents=True, exist_ok=True)
+    data = {name: asdict(profile) for name, profile in sorted(bank.items())}
+    bank_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return bank_path
+
+
+# ---------- Cast ----------
+
+
+def _profile_from_spec(spec, bank: dict[str, VoiceProfile], default_engine: str) -> VoiceProfile:
+    if isinstance(spec, dict):
+        return VoiceProfile(**{"engine": default_engine, **spec})
+    if isinstance(spec, str):
+        if spec in bank:
+            return bank[spec]
+        return VoiceProfile(engine=default_engine, voice=spec)
+    raise EngineError(f"Unrecognized voice spec: {spec!r}")
+
+
+@dataclass
+class Cast:
+    """Resolves speaker names to voice profiles, auto-assigning the rest."""
+
+    mapping: dict[str, VoiceProfile] = field(default_factory=dict)
+    default_engine: str = "edge"
+    narrator_profile: VoiceProfile | None = None
+    _auto: dict[str, VoiceProfile] = field(default_factory=dict)
+    _pool_index: int = 0
+
+    @classmethod
+    def load(
+        cls,
+        cast_path: Path | None,
+        bank: dict[str, VoiceProfile],
+        default_engine: str,
+        narrator_profile: VoiceProfile,
+    ) -> "Cast":
+        mapping: dict[str, VoiceProfile] = {}
+        if cast_path is not None:
+            data = json.loads(Path(cast_path).read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise EngineError(f"Cast file {cast_path} must be a JSON object.")
+            for speaker, spec in data.items():
+                mapping[speaker] = _profile_from_spec(spec, bank, default_engine)
+        return cls(
+            mapping=mapping,
+            default_engine=default_engine,
+            narrator_profile=narrator_profile,
+        )
+
+    def profile_for(self, speaker: str) -> VoiceProfile:
+        if speaker in self.mapping:
+            return self.mapping[speaker]
+        if speaker == "narrator":
+            return self.narrator_profile
+        if speaker in self._auto:
+            return self._auto[speaker]
+
+        pool = AUTO_POOLS.get(self.default_engine, [])
+        taken = {p.voice for p in self.mapping.values()} | {self.narrator_profile.voice}
+        while self._pool_index < len(pool) and pool[self._pool_index] in taken:
+            self._pool_index += 1
+        if self._pool_index < len(pool):
+            profile = VoiceProfile(engine=self.default_engine, voice=pool[self._pool_index])
+            self._pool_index += 1
+        else:
+            # Pool exhausted (or piper): minor characters share the narrator.
+            profile = self.narrator_profile
+        self._auto[speaker] = profile
+        return profile
+
+    def assignments(self) -> dict[str, VoiceProfile]:
+        return {**self.mapping, **self._auto}

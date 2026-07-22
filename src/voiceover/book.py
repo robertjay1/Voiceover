@@ -10,7 +10,9 @@ from pathlib import Path
 from . import audio
 from .chapters import Chapter, load_chapters
 from .chunking import chunk_text
-from .engines.base import TTSEngine
+from .dialogue import segment_dialogue
+from .engines.base import EngineError, TTSEngine
+from .voicebank import Cast, VoiceProfile
 
 
 @dataclass
@@ -28,6 +30,103 @@ def _safe_filename(name: str, max_length: int = 60) -> str:
     return name[:max_length].strip() or "untitled"
 
 
+class _EnginePool:
+    """Lazily creates and caches one engine instance per voice profile."""
+
+    def __init__(self) -> None:
+        self._engines: dict[str, TTSEngine] = {}
+
+    def get(self, profile: VoiceProfile) -> TTSEngine:
+        key = profile.key()
+        if key not in self._engines:
+            self._engines[key] = profile.create()
+        return self._engines[key]
+
+
+def _render_chapter_multivoice(
+    chapter: Chapter,
+    chunk_dir: Path,
+    chapter_file: Path,
+    cast: Cast,
+    engines: _EnginePool,
+    *,
+    turn_gap: float,
+    max_chunk_chars: int,
+    resume: bool,
+    result: BuildResult,
+    log,
+) -> None:
+    """Render one chapter with a different voice per speaker.
+
+    Every chunk is normalized to a common WAV format so voices from
+    different engines join seamlessly, with a short silence between
+    speaker turns for natural pacing.
+    """
+    segments = segment_dialogue(chapter.text)
+    units: list[tuple[VoiceProfile, str]] = []
+    for segment in segments:
+        profile = cast.profile_for(segment.speaker)
+        for chunk in chunk_text(segment.text, max_chunk_chars):
+            units.append((profile, chunk))
+
+    speakers = sorted({s.speaker for s in segments if s.is_dialogue})
+    if speakers:
+        log(f"    speakers: {', '.join(speakers)}")
+
+    use_ffmpeg = audio.ffmpeg_available()
+    chunk_files: list[Path] = []
+    framerate: int | None = audio.STD_FRAMERATE if use_ffmpeg else None
+
+    for unit_index, (profile, chunk) in enumerate(units, start=1):
+        chunk_file = chunk_dir / f"{unit_index:04d}-{profile.key()[:48]}.wav"
+        result.chunks_total += 1
+        if resume and chunk_file.exists() and chunk_file.stat().st_size > 0:
+            result.chunks_reused += 1
+        else:
+            engine = engines.get(profile)
+            if use_ffmpeg:
+                native = chunk_file.with_suffix(f".native.{engine.extension}")
+                engine.synthesize(chunk, native)
+                audio.normalize_to_wav(native, chunk_file)
+                native.unlink(missing_ok=True)
+            else:
+                if engine.extension != "wav":
+                    raise EngineError(
+                        "Mixing voices with the "
+                        f"'{profile.engine}' engine requires ffmpeg. Install ffmpeg."
+                    )
+                engine.synthesize(chunk, chunk_file)
+            log(f"    chunk {unit_index}/{len(units)} done")
+        if framerate is None:
+            framerate = audio.wav_framerate(chunk_file)
+        chunk_files.append(chunk_file)
+
+    # Short breath between speaker turns.
+    gap_file = chunk_dir / f"_gap-{framerate}.wav"
+    if turn_gap > 0 and not gap_file.exists():
+        audio.write_silence(gap_file, turn_gap, framerate)
+
+    sequence: list[Path] = []
+    previous_profile: VoiceProfile | None = None
+    for (profile, _), chunk_file in zip(units, chunk_files):
+        if (
+            turn_gap > 0
+            and previous_profile is not None
+            and profile.key() != previous_profile.key()
+        ):
+            sequence.append(gap_file)
+        sequence.append(chunk_file)
+        previous_profile = profile
+
+    if use_ffmpeg:
+        chapter_wav = chunk_dir / "_chapter.wav"
+        audio.concat_audio(sequence, chapter_wav)
+        audio.convert(chapter_wav, chapter_file, bitrate="96k")
+        chapter_wav.unlink(missing_ok=True)
+    else:
+        audio.concat_audio(sequence, chapter_file)
+
+
 def build_audiobook(
     input_path: Path,
     out_dir: Path,
@@ -39,12 +138,17 @@ def build_audiobook(
     single_file: bool = False,
     max_chunk_chars: int = 1800,
     resume: bool = True,
+    cast: Cast | None = None,
+    turn_gap: float = 0.35,
     log=print,
 ) -> BuildResult:
     """Render input text into per-chapter audio files, optionally combined.
 
     Chunk audio is cached in <out_dir>/.chunks/; re-running after a crash
     or interruption reuses every finished chunk (resume=True).
+
+    With a cast, dialogue is detected and each speaker gets their own
+    voice; narration uses the narrator profile.
     """
     started = time.monotonic()
     input_path = Path(input_path)
@@ -54,22 +158,37 @@ def build_audiobook(
         raise ValueError(f"No readable text found in {input_path}")
 
     book_title = title or _title_from_input(input_path, chapters)
-    ext = engine.extension
+    multivoice = cast is not None
+    if multivoice:
+        ext = "mp3" if audio.ffmpeg_available() else "wav"
+    else:
+        ext = engine.extension
     work_dir = out_dir / ".chunks"
     result = BuildResult()
+    engines = _EnginePool()
 
     total_words = sum(c.words for c in chapters)
     log(f"Narrating: {book_title}")
-    log(f"Engine:    {engine.describe()}")
+    log(f"Engine:    {engine.describe()}" + ("  [multi-voice]" if multivoice else ""))
     log(f"Chapters:  {len(chapters)}  ({total_words:,} words)")
 
     for index, chapter in enumerate(chapters, start=1):
-        chunks = chunk_text(chapter.text, max_chunk_chars)
         chapter_stem = f"{index:02d} - {_safe_filename(chapter.title)}"
         chapter_file = out_dir / f"{chapter_stem}.{ext}"
         chunk_dir = work_dir / f"ch{index:03d}"
         chunk_dir.mkdir(parents=True, exist_ok=True)
 
+        if multivoice:
+            log(f"[{index}/{len(chapters)}] {chapter.title}")
+            _render_chapter_multivoice(
+                chapter, chunk_dir, chapter_file, cast, engines,
+                turn_gap=turn_gap, max_chunk_chars=max_chunk_chars,
+                resume=resume, result=result, log=log,
+            )
+            result.chapter_files.append(chapter_file)
+            continue
+
+        chunks = chunk_text(chapter.text, max_chunk_chars)
         log(f"[{index}/{len(chapters)}] {chapter.title} — {len(chunks)} chunk(s)")
 
         chunk_files: list[Path] = []

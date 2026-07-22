@@ -79,6 +79,40 @@ def concat_audio(files: list[Path], out_path: Path) -> None:
         _concat_mp3_python(files, out_path)
 
 
+STD_FRAMERATE = 24000
+
+
+def normalize_to_wav(in_path: Path, out_path: Path, framerate: int = STD_FRAMERATE) -> None:
+    """Re-render any audio file as mono 16-bit WAV at a fixed sample rate.
+
+    Multi-voice books mix engines whose native outputs differ (edge=mp3
+    24 kHz, espeak=wav 22 kHz, piper varies); normalizing every chunk to
+    one format makes concatenation seamless. Requires ffmpeg.
+    """
+    if not ffmpeg_available():
+        raise AudioError("ffmpeg is required to mix voices from different engines.")
+    _run([
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(in_path), "-ar", str(framerate), "-ac", "1",
+        "-sample_fmt", "s16", str(out_path),
+    ])
+
+
+def write_silence(path: Path, seconds: float, framerate: int = STD_FRAMERATE) -> None:
+    """Write a mono 16-bit WAV of silence (pure Python, no ffmpeg)."""
+    frames = max(1, int(seconds * framerate))
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(framerate)
+        w.writeframes(b"\x00\x00" * frames)
+
+
+def wav_framerate(path: Path) -> int:
+    with wave.open(str(path), "rb") as w:
+        return w.getframerate()
+
+
 def convert(in_path: Path, out_path: Path, bitrate: str = "64k") -> None:
     """Convert between audio formats (e.g. wav -> mp3). Requires ffmpeg."""
     if not ffmpeg_available():

@@ -12,7 +12,10 @@ from pathlib import Path
 
 from .base import EngineError, TTSEngine
 
-DEFAULT_VOICE = "en-US-AriaNeural"
+# The multilingual voices are Microsoft's newest generation and sound
+# noticeably more natural for long-form narration than the older
+# per-locale voices.
+DEFAULT_VOICE = "en-US-AndrewMultilingualNeural"
 RETRIES = 4
 RETRY_DELAY = 2.0  # seconds, doubled on each retry
 

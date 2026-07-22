@@ -6,22 +6,23 @@ import argparse
 import sys
 from pathlib import Path
 
+import json
+
 from . import __version__
 from .audio import AudioError, ffmpeg_available
 from .book import build_audiobook
 from .chapters import load_chapters
 from .chunking import chunk_text
-from .engines import ENGINE_NAMES, create_engine
+from .dialogue import NARRATOR, speaker_stats
+from .engines import ENGINE_NAMES
 from .engines.base import EngineError
-
-
-def _engine_options(args: argparse.Namespace) -> dict:
-    options: dict = {"voice": args.voice, "rate": args.rate}
-    if args.engine == "edge":
-        options["volume"] = args.volume
-    if args.engine == "piper":
-        options["model_dir"] = args.model_dir
-    return options
+from .voicebank import (
+    AUTO_POOLS,
+    Cast,
+    VoiceProfile,
+    load_bank,
+    save_bank,
+)
 
 
 def _format_duration(seconds: float) -> str:
@@ -30,12 +31,49 @@ def _format_duration(seconds: float) -> str:
     return f"{hours}h {minutes:02d}m {secs:02d}s" if hours else f"{minutes}m {secs:02d}s"
 
 
+def _narrator_profile(args: argparse.Namespace) -> VoiceProfile:
+    from .voicebank import DEFAULT_VOICES
+
+    # --voice may name a saved voice-bank profile; the profile then
+    # defines the whole narrator setup (engine, voice, rate, volume).
+    if args.voice:
+        bank = load_bank(getattr(args, "bank", None))
+        if args.voice in bank:
+            return bank[args.voice]
+    return VoiceProfile(
+        engine=args.engine,
+        voice=args.voice or DEFAULT_VOICES.get(args.engine),
+        rate=args.rate,
+        volume=getattr(args, "volume", 1.0),
+        model_dir=getattr(args, "model_dir", None),
+    )
+
+
+def _load_cast(args: argparse.Namespace) -> Cast | None:
+    cast_path = getattr(args, "cast", None)
+    if not cast_path and not getattr(args, "multi_voice", False):
+        return None
+    bank = load_bank(getattr(args, "bank", None))
+    narrator = _narrator_profile(args)
+    cast = Cast.load(
+        Path(cast_path) if cast_path else None,
+        bank,
+        default_engine=args.engine,
+        narrator_profile=narrator,
+    )
+    # A cast entry may rename the narrator voice too.
+    if "narrator" in cast.mapping:
+        cast.narrator_profile = cast.mapping["narrator"]
+    return cast
+
+
 def cmd_build(args: argparse.Namespace) -> int:
     if (args.m4b or args.single) and not ffmpeg_available() and args.m4b:
         print("error: creating .m4b requires ffmpeg — install it first.", file=sys.stderr)
         return 2
 
-    engine = create_engine(args.engine, **_engine_options(args))
+    cast = _load_cast(args)
+    engine = (cast.narrator_profile if cast else _narrator_profile(args)).create()
     result = build_audiobook(
         Path(args.input),
         Path(args.out),
@@ -46,6 +84,8 @@ def cmd_build(args: argparse.Namespace) -> int:
         single_file=args.single,
         max_chunk_chars=args.max_chunk_chars,
         resume=not args.no_resume,
+        cast=cast,
+        turn_gap=args.turn_gap,
     )
 
     print()
@@ -56,7 +96,91 @@ def cmd_build(args: argparse.Namespace) -> int:
         print(f"  {chapter_file}")
     if result.book_file:
         print(f"  {result.book_file}  <- complete audiobook")
+    if cast:
+        print("\nCast used:")
+        width = max(len(s) for s in list(cast.assignments()) + ["narrator"])
+        print(f"  {'narrator':{width}s}  {cast.narrator_profile.label()}")
+        for speaker, profile in sorted(cast.assignments().items()):
+            if speaker != "narrator":
+                print(f"  {speaker:{width}s}  {profile.label()}")
     return 0
+
+
+def cmd_cast(args: argparse.Namespace) -> int:
+    """Analyze speakers and write an editable cast file template."""
+    chapters = load_chapters(Path(args.input))
+    counts: dict[str, int] = {}
+    for chapter in chapters:
+        for speaker, words in speaker_stats(chapter.text).items():
+            counts[speaker] = counts.get(speaker, 0) + words
+
+    dialogue_speakers = {s: w for s, w in counts.items() if s != NARRATOR}
+    ranked = sorted(dialogue_speakers.items(), key=lambda kv: -kv[1])
+
+    print(f"Detected {len(ranked)} speaker(s) plus the narrator:\n")
+    narrator_words = counts.get(NARRATOR, 0)
+    print(f"  {'narrator':24s} {narrator_words:8,d} words")
+    for speaker, words in ranked:
+        print(f"  {speaker:24s} {words:8,d} words")
+
+    from .voicebank import DEFAULT_VOICES
+
+    pool = AUTO_POOLS.get(args.engine, [])
+    cast_data: dict = {}
+    narrator_voice = DEFAULT_VOICES.get(args.engine, "")
+    cast_data["narrator"] = narrator_voice
+    available = [v for v in pool if v != narrator_voice]
+    for index, (speaker, _words) in enumerate(ranked):
+        cast_data[speaker] = available[index % len(available)] if available else ""
+
+    out_path = Path(args.out)
+    out_path.write_text(json.dumps(cast_data, indent=2) + "\n", encoding="utf-8")
+    print(f"\nWrote cast template: {out_path}")
+    print("Edit the voice for each speaker (bank profile names work too), then run:")
+    print(f"  voiceover build {args.input} --cast {out_path}")
+    return 0
+
+
+def cmd_bank(args: argparse.Namespace) -> int:
+    bank_path = args.bank
+    bank = load_bank(bank_path)
+
+    if args.bank_command == "list":
+        if not bank:
+            print("Voice bank is empty. Add one with:\n"
+                  "  voiceover bank add my-narrator --engine edge "
+                  "--voice en-US-AndrewMultilingualNeural --rate 1.0")
+            return 0
+        width = max(len(name) for name in bank)
+        for name, profile in sorted(bank.items()):
+            print(f"  {name:{width}s}  {profile.label()}")
+        return 0
+
+    if args.bank_command == "add":
+        if not args.voice:
+            print("error: --voice is required when adding a profile.", file=sys.stderr)
+            return 2
+        bank[args.name] = VoiceProfile(
+            engine=args.engine,
+            voice=args.voice,
+            rate=args.rate,
+            volume=args.volume,
+            model_dir=args.model_dir,
+        )
+        path = save_bank(bank, bank_path)
+        print(f"Saved '{args.name}' ({bank[args.name].label()}) to {path}")
+        return 0
+
+    if args.bank_command == "remove":
+        if args.name not in bank:
+            print(f"error: no profile named '{args.name}' in the bank.", file=sys.stderr)
+            return 1
+        del bank[args.name]
+        path = save_bank(bank, bank_path)
+        print(f"Removed '{args.name}' from {path}")
+        return 0
+
+    return 2
 
 
 def cmd_chapters(args: argparse.Namespace) -> int:
@@ -92,7 +216,7 @@ def cmd_voices(args: argparse.Namespace) -> int:
 
 
 def cmd_preview(args: argparse.Namespace) -> int:
-    engine = create_engine(args.engine, **_engine_options(args))
+    engine = _narrator_profile(args).create()
     out_path = Path(args.out) if args.out else Path(f"preview.{engine.extension}")
     engine.synthesize(args.text, out_path)
     print(f"Wrote {out_path}")
@@ -117,6 +241,8 @@ def build_parser() -> argparse.ArgumentParser:
                        help="volume multiplier (edge engine only)")
         p.add_argument("--model-dir", default=None,
                        help="directory containing Piper .onnx voice models")
+        p.add_argument("--bank", default=None,
+                       help="voice bank file (default: ~/.voiceover/voicebank.json)")
 
     p_build = sub.add_parser("build", help="narrate a book/text into audio files")
     p_build.add_argument("input", help="text/markdown file, or directory of chapter files")
@@ -131,8 +257,40 @@ def build_parser() -> argparse.ArgumentParser:
                          help="max characters per synthesis chunk (default: 1800)")
     p_build.add_argument("--no-resume", action="store_true",
                          help="re-synthesize everything, ignoring cached chunks")
+    p_build.add_argument("--cast", help="JSON cast file mapping speakers to voices "
+                                        "(see 'voiceover cast') — enables multi-voice")
+    p_build.add_argument("--multi-voice", action="store_true",
+                         help="detect dialogue and auto-assign a distinct voice per speaker")
+    p_build.add_argument("--turn-gap", type=float, default=0.35,
+                         help="silence in seconds between speaker turns (default: 0.35)")
     add_engine_args(p_build)
     p_build.set_defaults(func=cmd_build)
+
+    p_cast = sub.add_parser(
+        "cast", help="detect speakers in a book and write a cast file to edit"
+    )
+    p_cast.add_argument("input", help="text/markdown file, or directory of chapter files")
+    p_cast.add_argument("-o", "--out", default="cast.json", help="cast file to write")
+    p_cast.add_argument("--engine", choices=ENGINE_NAMES, default="edge")
+    p_cast.set_defaults(func=cmd_cast)
+
+    p_bank = sub.add_parser("bank", help="manage your bank of reusable named voices")
+    p_bank.add_argument("--bank", default=None,
+                        help="voice bank file (default: ~/.voiceover/voicebank.json)")
+    bank_sub = p_bank.add_subparsers(dest="bank_command", required=True)
+    b_list = bank_sub.add_parser("list", help="show saved voice profiles")
+    b_list.set_defaults(func=cmd_bank)
+    b_add = bank_sub.add_parser("add", help="save a named voice profile")
+    b_add.add_argument("name", help="profile name, e.g. gruff-captain")
+    b_add.add_argument("--engine", choices=ENGINE_NAMES, default="edge")
+    b_add.add_argument("--voice", required=True, help="engine voice name or piper model")
+    b_add.add_argument("--rate", type=float, default=1.0)
+    b_add.add_argument("--volume", type=float, default=1.0)
+    b_add.add_argument("--model-dir", default=None, help="piper model directory")
+    b_add.set_defaults(func=cmd_bank)
+    b_remove = bank_sub.add_parser("remove", help="delete a voice profile")
+    b_remove.add_argument("name")
+    b_remove.set_defaults(func=cmd_bank)
 
     p_chapters = sub.add_parser("chapters", help="preview chapter detection without synthesizing")
     p_chapters.add_argument("input", help="text/markdown file, or directory of chapter files")

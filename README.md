@@ -20,6 +20,13 @@ Chapters:  14  (86,300 words)
 
 ## Features
 
+- **Multi-voice narration** — detects who's speaking in dialogue and gives
+  every character their own voice, with the narrator reading the prose.
+  Handles attribution that only arrives after the quote (`"Run," said Mira.`),
+  bare pronoun tags (`he said` — resolved from surrounding narration),
+  interrupted quotes, and unattributed alternating exchanges.
+- **Voice bank** — build a personal library of named, reusable voice
+  profiles (`gruff-captain`, `warm-narrator`…) and cast them in any book.
 - **Chapter detection** — markdown headings (`#`, `##`), plain-text openers
   (`Chapter 7`, `PART II`, `Prologue`…), or one-file-per-chapter directories.
 - **Three TTS engines**:
@@ -75,6 +82,85 @@ voiceover build mybook.md -o audiobook --voice en-GB-RyanNeural --m4b --author "
 You get one MP3 per chapter plus `mybook.m4b` — a single audiobook file with
 chapter navigation that works in Apple Books, Audiobookshelf, Plex, and most
 audiobook apps.
+
+## Multi-voice narration (character voices)
+
+Give each character in your book their own voice. First see who Voiceover
+detects:
+
+```sh
+voiceover cast mybook.md -o cast.json
+```
+
+```
+Detected 2 speaker(s) plus the narrator:
+
+  narrator          14,203 words
+  Mira               1,882 words
+  Elias              1,540 words
+
+Wrote cast template: cast.json
+```
+
+Edit `cast.json` to taste — values can be an engine voice name, a voice-bank
+profile, or an inline setting; map two aliases of the same character to one
+voice:
+
+```json
+{
+  "narrator": "en-US-AndrewMultilingualNeural",
+  "Elias": "gruff-keeper",
+  "the old man": "gruff-keeper",
+  "Mira": { "voice": "en-US-EmmaMultilingualNeural", "rate": 1.05 }
+}
+```
+
+Then build with the cast:
+
+```sh
+voiceover build mybook.md --cast cast.json --m4b
+```
+
+Or skip the cast file entirely and let Voiceover auto-assign distinct voices:
+
+```sh
+voiceover build mybook.md --multi-voice --m4b
+```
+
+How attribution works: explicit tags are matched before and *after* each
+quote (`"Run," said Mira.`), a named tag anywhere in a paragraph claims its
+other quotes, bare pronoun tags (`he said`) are resolved from characters
+recently mentioned in the narration, and unattributed lines in a two-person
+exchange alternate. Anything genuinely ambiguous stays with the narrator —
+the same behavior as a single-voice audiobook. Speakers not listed in the
+cast are auto-assigned distinct voices deterministically. A short
+configurable silence (`--turn-gap`, default 0.35 s) is inserted between
+speaker turns for natural pacing. Multi-voice mode works best with ffmpeg
+installed (required when mixing engines or using edge voices).
+
+## The voice bank — your own stock of voices
+
+Save voices you like — engine, voice, and speed — under memorable names,
+once, and reuse them across every project:
+
+```sh
+voiceover bank add warm-narrator --voice en-US-AndrewMultilingualNeural --rate 0.98
+voiceover bank add gruff-keeper  --voice en-GB-RyanNeural --rate 0.9
+voiceover bank add young-woman   --voice en-US-EmmaMultilingualNeural --rate 1.05
+voiceover bank list
+```
+
+The bank lives in `~/.voiceover/voicebank.json` (override with `--bank`).
+Bank names work anywhere a voice is accepted — in cast files and directly
+as `--voice`:
+
+```sh
+voiceover build mybook.md --voice warm-narrator --m4b
+voiceover preview "Testing my saved voice." --voice gruff-keeper
+```
+
+Profiles can use different engines — an edge narrator can share a book
+with piper characters (ffmpeg required to mix).
 
 ### Input formats
 
