@@ -62,11 +62,15 @@ def _render_chapter_multivoice(
     different engines join seamlessly, with a short silence between
     speaker turns for natural pacing.
     """
+    from .engines import CHUNK_LIMITS
+
     segments = segment_dialogue(chapter.text)
     units: list[tuple[VoiceProfile, str]] = []
     for segment in segments:
         profile = cast.profile_for(segment.speaker)
-        for chunk in chunk_text(segment.text, max_chunk_chars):
+        limit = CHUNK_LIMITS.get(profile.engine)
+        effective = min(max_chunk_chars, limit) if limit else max_chunk_chars
+        for chunk in chunk_text(segment.text, effective):
             units.append((profile, chunk))
 
     speakers = sorted({s.speaker for s in segments if s.is_dialogue})
@@ -188,7 +192,9 @@ def build_audiobook(
             result.chapter_files.append(chapter_file)
             continue
 
-        chunks = chunk_text(chapter.text, max_chunk_chars)
+        engine_limit = getattr(engine, "preferred_chunk_chars", None)
+        effective_chars = min(max_chunk_chars, engine_limit) if engine_limit else max_chunk_chars
+        chunks = chunk_text(chapter.text, effective_chars)
         log(f"[{index}/{len(chapters)}] {chapter.title} — {len(chunks)} chunk(s)")
 
         chunk_files: list[Path] = []

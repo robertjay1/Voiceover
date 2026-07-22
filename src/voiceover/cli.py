@@ -141,6 +141,44 @@ def cmd_cast(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_clone(args: argparse.Namespace) -> int:
+    """Create a cloned voice from a reference recording and save it to the bank."""
+    sample = Path(args.sample).expanduser().resolve()
+    if not sample.is_file():
+        print(f"error: sample recording not found: {sample}", file=sys.stderr)
+        return 1
+
+    if sample.suffix.lower() == ".wav":
+        import wave
+
+        try:
+            with wave.open(str(sample), "rb") as w:
+                seconds = w.getnframes() / w.getframerate()
+            if seconds < 5:
+                print(f"note: sample is only {seconds:.1f}s — 10–20s of clean "
+                      "speech clones noticeably better.")
+            elif seconds > 40:
+                print(f"note: sample is {seconds:.0f}s — chatterbox only uses "
+                      "the first portion; 10–20s is ideal.")
+        except wave.Error:
+            pass
+
+    bank_path = args.bank
+    bank = load_bank(bank_path)
+    bank[args.name] = VoiceProfile(
+        engine="chatterbox",
+        sample=str(sample),
+        exaggeration=args.exaggeration,
+    )
+    path = save_bank(bank, bank_path)
+    print(f"Saved cloned voice '{args.name}' (from {sample.name}) to {path}")
+    print("\nOnly clone voices you have the right to use — your own, or a "
+          "speaker who gave permission.\nTry it:")
+    print(f"  voiceover preview \"This is my cloned voice.\" --voice {args.name}")
+    print(f"  voiceover build book.md --voice {args.name} --m4b")
+    return 0
+
+
 def cmd_bank(args: argparse.Namespace) -> int:
     bank_path = args.bank
     bank = load_bank(bank_path)
@@ -157,8 +195,8 @@ def cmd_bank(args: argparse.Namespace) -> int:
         return 0
 
     if args.bank_command == "add":
-        if not args.voice:
-            print("error: --voice is required when adding a profile.", file=sys.stderr)
+        if not args.voice and not args.sample:
+            print("error: provide --voice, or --sample for a cloned voice.", file=sys.stderr)
             return 2
         bank[args.name] = VoiceProfile(
             engine=args.engine,
@@ -166,6 +204,7 @@ def cmd_bank(args: argparse.Namespace) -> int:
             rate=args.rate,
             volume=args.volume,
             model_dir=args.model_dir,
+            sample=str(Path(args.sample).expanduser().resolve()) if args.sample else None,
         )
         path = save_bank(bank, bank_path)
         print(f"Saved '{args.name}' ({bank[args.name].label()}) to {path}")
@@ -206,6 +245,19 @@ def cmd_voices(args: argparse.Namespace) -> int:
         from .engines.espeak import list_voices
 
         print(list_voices(args.language))
+    elif args.engine == "kokoro":
+        from .engines.kokoro import KNOWN_VOICES
+
+        for voice in KNOWN_VOICES:
+            print(f"  {voice}")
+        print("\nPrefix key: a=American, b=British; f=female, m=male.")
+        print("Blend voices into your own with weights, e.g.:")
+        print('  --engine kokoro --voice "af_heart*0.6+af_sky*0.4"')
+    elif args.engine == "chatterbox":
+        print("Chatterbox voices are cloned from a reference recording:\n"
+              "  voiceover clone my-voice --sample me.wav\n"
+              "Without a sample it uses its built-in voice. Only clone voices\n"
+              "you have the right to use.")
     else:
         print("Piper voices are .onnx models you download once, e.g.:\n"
               "  python -m piper.download_voices en_US-lessac-medium --data-dir ./voices\n"
@@ -274,6 +326,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_cast.add_argument("--engine", choices=ENGINE_NAMES, default="edge")
     p_cast.set_defaults(func=cmd_cast)
 
+    p_clone = sub.add_parser(
+        "clone",
+        help="clone a voice from a recording (saved to your voice bank)",
+        description="Clone a voice from ~10-20 seconds of clean speech and "
+                    "save it as a named bank profile. Uses the chatterbox "
+                    "engine (pip install voiceover[clone]). Only clone voices "
+                    "you have the right to use.",
+    )
+    p_clone.add_argument("name", help="bank profile name for the cloned voice")
+    p_clone.add_argument("--sample", required=True,
+                         help="reference recording (wav/mp3/flac, ~10-20s of clean speech)")
+    p_clone.add_argument("--exaggeration", type=float, default=None,
+                         help="expressiveness 0..1 (default: engine's neutral 0.5)")
+    p_clone.add_argument("--bank", default=None,
+                         help="voice bank file (default: ~/.voiceover/voicebank.json)")
+    p_clone.set_defaults(func=cmd_clone)
+
     p_bank = sub.add_parser("bank", help="manage your bank of reusable named voices")
     p_bank.add_argument("--bank", default=None,
                         help="voice bank file (default: ~/.voiceover/voicebank.json)")
@@ -283,10 +352,12 @@ def build_parser() -> argparse.ArgumentParser:
     b_add = bank_sub.add_parser("add", help="save a named voice profile")
     b_add.add_argument("name", help="profile name, e.g. gruff-captain")
     b_add.add_argument("--engine", choices=ENGINE_NAMES, default="edge")
-    b_add.add_argument("--voice", required=True, help="engine voice name or piper model")
+    b_add.add_argument("--voice", help="engine voice name, piper model, or kokoro blend")
     b_add.add_argument("--rate", type=float, default=1.0)
     b_add.add_argument("--volume", type=float, default=1.0)
     b_add.add_argument("--model-dir", default=None, help="piper model directory")
+    b_add.add_argument("--sample", default=None,
+                       help="reference recording for a cloned (chatterbox) voice")
     b_add.set_defaults(func=cmd_bank)
     b_remove = bank_sub.add_parser("remove", help="delete a voice profile")
     b_remove.add_argument("name")

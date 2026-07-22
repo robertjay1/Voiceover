@@ -32,8 +32,10 @@ DEFAULT_BANK_PATH = Path("~/.voiceover/voicebank.json")
 
 DEFAULT_VOICES = {
     "edge": "en-US-AndrewMultilingualNeural",
+    "kokoro": "af_heart",
     "espeak": "en-us",
     "piper": "en_US-lessac-medium",
+    "chatterbox": None,  # built-in voice unless a sample is given
 }
 
 # Distinct-sounding voices for auto-assignment, most natural first.
@@ -52,10 +54,16 @@ AUTO_POOLS = {
         "en-AU-WilliamNeural",
         "en-IE-EmilyNeural",
     ],
+    "kokoro": [
+        "am_michael", "af_bella", "bm_george", "bf_emma", "am_fenrir",
+        "af_nicole", "bm_lewis", "bf_isabella", "am_puck", "af_sky",
+    ],
     "espeak": ["en-us", "en+f3", "en+m3", "en+f4", "en+m7", "en+f2", "en+croak"],
-    # Piper voices are local model files; auto-assignment can't invent
-    # them, so every speaker must be cast explicitly (or share one model).
+    # Piper voices are local model files and chatterbox voices are cloned
+    # from samples; auto-assignment can't invent either, so speakers must
+    # be cast explicitly (uncast ones share the narrator).
     "piper": [],
+    "chatterbox": [],
 }
 
 
@@ -66,10 +74,12 @@ class VoiceProfile:
     rate: float = 1.0
     volume: float = 1.0
     model_dir: str | None = None
+    sample: str | None = None  # reference recording for cloned voices
+    exaggeration: float | None = None  # chatterbox expressiveness (0..1)
 
     def key(self) -> str:
         """Stable identity used in chunk cache filenames."""
-        raw = f"{self.engine}:{self.voice}:{self.rate}:{self.volume}"
+        raw = f"{self.engine}:{self.voice}:{self.rate}:{self.volume}:{self.sample}"
         return re.sub(r"[^\w+-]+", "_", raw)
 
     def create(self) -> TTSEngine:
@@ -78,10 +88,16 @@ class VoiceProfile:
             options["volume"] = self.volume
         if self.engine == "piper":
             options["model_dir"] = self.model_dir
+        if self.engine == "chatterbox":
+            options["sample"] = self.sample
+            options["exaggeration"] = self.exaggeration
         return create_engine(self.engine, **options)
 
     def label(self) -> str:
         rate = f" @{self.rate}x" if self.rate != 1.0 else ""
+        if self.engine == "chatterbox":
+            source = Path(self.sample).name if self.sample else "built-in"
+            return f"chatterbox:cloned<{source}>{rate}"
         return f"{self.engine}:{self.voice}{rate}"
 
 

@@ -29,12 +29,18 @@ Chapters:  14  (86,300 words)
   profiles (`gruff-captain`, `warm-narrator`…) and cast them in any book.
 - **Chapter detection** — markdown headings (`#`, `##`), plain-text openers
   (`Chapter 7`, `PART II`, `Prologue`…), or one-file-per-chapter directories.
-- **Three TTS engines**:
+- **Voice cloning** — clone a voice from ~10 seconds of recorded speech and
+  narrate whole books with it, entirely on your own machine.
+- **Five TTS engines**:
   | Engine | Quality | Internet | Notes |
   |---|---|---|---|
   | `edge` (default) | ★★★★★ neural | required | Free Microsoft neural voices, 90+ languages, no API key |
-  | `piper` | ★★★★ neural | offline | Local ONNX models, unlimited & private |
+  | `kokoro` | ★★★★★ neural | offline¹ | Runs on CPU in real time; blendable voices (Apache-2.0) |
+  | `chatterbox` | ★★★★★ cloned | offline¹ | Zero-shot voice cloning from a short sample (MIT) |
+  | `piper` | ★★★★ neural | offline¹ | Local ONNX models, lightweight |
   | `espeak` | ★ robotic | offline | Instant — for previews and testing |
+
+  ¹ one-time model download, then fully offline.
 - **Resume** — synthesis is chunked and cached; an interrupted 8-hour render
   picks up where it left off instead of starting over.
 - **`.m4b` audiobooks** with chapter markers, title/author metadata (via ffmpeg).
@@ -171,6 +177,49 @@ with piper characters (ffmpeg required to mix).
 - **Directory** — each `.txt`/`.md` file becomes a chapter, in filename order
   (`01_intro.md`, `02_departure.md`, …).
 
+## Clone your own voice
+
+Record 10–20 seconds of clean speech (no music, minimal room echo), then:
+
+```sh
+pip install "voiceover[clone]"          # Chatterbox: local, MIT-licensed
+voiceover clone my-voice --sample me.wav
+voiceover preview "This is my cloned voice." --voice my-voice
+voiceover build book.md --voice my-voice --m4b
+```
+
+The clone is saved to your voice bank like any other profile, so it can be
+the narrator, or cast as one character among many. Everything runs locally —
+your recording never leaves your machine — and output carries Resemble's
+imperceptible watermark, a responsible default for synthetic speech.
+A GPU (CUDA or Apple Silicon) makes rendering fast; CPU works but is slow
+for a full book. `--exaggeration 0.7` adds expressiveness.
+
+**Only clone voices you have the right to use** — your own, or a speaker
+who has given you permission.
+
+## The most natural fully-offline narration: Kokoro
+
+```sh
+pip install "voiceover[kokoro]"         # ~330 MB model downloads on first use
+voiceover voices --engine kokoro
+voiceover build book.md --engine kokoro --voice af_heart --m4b
+```
+
+Kokoro is a small Apache-2.0 neural model that runs in real time on a
+laptop CPU and sounds close to the cloud voices. It also supports **voice
+blending** — mix voices with weights to design a signature voice of your
+own, and save it to the bank:
+
+```sh
+voiceover bank add my-signature --engine kokoro --voice "af_heart*0.6+af_sky*0.4"
+voiceover build book.md --voice my-signature --m4b
+```
+
+Multi-voice books work fully offline with kokoro too: uncast speakers are
+auto-assigned from ten distinct kokoro voices
+(`voiceover build book.md --engine kokoro --multi-voice`).
+
 ### Offline narration with Piper
 
 ```sh
@@ -226,8 +275,9 @@ tests/           unit tests (no network needed)
 
 - The `edge` engine uses Microsoft Edge's public read-aloud service. It's
   free and needs no key, but it is an online service — for guaranteed
-  offline/private narration, or very large volumes, use `piper`.
-- Only narrate texts you have the rights to convert.
+  offline/private narration, or very large volumes, use `kokoro` or `piper`.
+- Only narrate texts you have the rights to convert, and only clone voices
+  you have the right to use.
 
 ## License
 

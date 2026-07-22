@@ -14,6 +14,9 @@ class TTSEngine(ABC):
     #: Audio container the engine produces ("mp3" or "wav").
     extension: str
 
+    #: Engines that degrade on long inputs can cap chunk size here.
+    preferred_chunk_chars: int | None = None
+
     @abstractmethod
     def synthesize(self, text: str, out_path: Path) -> None:
         """Render text to audio at out_path (atomic: write temp, then rename)."""
