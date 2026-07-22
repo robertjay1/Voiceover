@@ -1,60 +1,147 @@
 # 🔊 Voiceover
 
-A free text-to-speech app that runs entirely in your browser. Type or paste any
-text and hear it read aloud — no accounts, no server, and nothing is uploaded
-anywhere. It uses the [Web Speech API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Speech_API)
-built into modern browsers, so there are zero dependencies to install.
+Turn books and long-form text into audiobooks. Voiceover is a command-line
+tool that takes text or markdown files, detects chapters, narrates them with
+natural-sounding neural voices, and produces per-chapter MP3s or a single
+`.m4b` audiobook with embedded chapter markers — ready for any audiobook
+player.
+
+```
+$ voiceover build mybook.md -o audiobook --m4b --author "Jane Doe"
+Narrating: mybook
+Engine:    edge (en-US-AriaNeural, rate +0%)
+Chapters:  14  (86,300 words)
+[1/14] The Beginning — 18 chunk(s)
+...
+  audiobook/01 - The Beginning.mp3
+  ...
+  audiobook/mybook.m4b  <- complete audiobook
+```
 
 ## Features
 
-- **Voice picker** — choose from every voice installed on your system, grouped
-  by language (Chrome also offers high-quality cloud voices).
-- **Speed, pitch, and volume sliders** with live value readouts.
-- **Read-along highlighting** — the word currently being spoken is highlighted
-  and scrolled into view.
-- **Pause / resume / stop** playback controls.
-- **Long-text support** — text is split into sentence-sized chunks to work
-  around browser limits on long utterances.
-- **Saved preferences** — your voice and slider settings persist between visits
-  (stored locally in your browser).
-- **Keyboard shortcuts** — `Ctrl`/`⌘` + `Enter` to speak, `Esc` to stop.
-- **Light & dark themes** following your system preference.
+- **Chapter detection** — markdown headings (`#`, `##`), plain-text openers
+  (`Chapter 7`, `PART II`, `Prologue`…), or one-file-per-chapter directories.
+- **Three TTS engines**:
+  | Engine | Quality | Internet | Notes |
+  |---|---|---|---|
+  | `edge` (default) | ★★★★★ neural | required | Free Microsoft neural voices, 90+ languages, no API key |
+  | `piper` | ★★★★ neural | offline | Local ONNX models, unlimited & private |
+  | `espeak` | ★ robotic | offline | Instant — for previews and testing |
+- **Resume** — synthesis is chunked and cached; an interrupted 8-hour render
+  picks up where it left off instead of starting over.
+- **`.m4b` audiobooks** with chapter markers, title/author metadata (via ffmpeg).
+- **Markdown-aware narration** — strips link URLs, emphasis markers, code
+  fences, and bullets so the narrator doesn't read syntax aloud.
+- **Speed control** (`--rate 1.2`), per-language voice pick, dry-run chapter
+  preview.
 
-## Getting started
-
-No build step is required. Either:
-
-**Open directly** — double-click `index.html`, or
-
-**Serve locally** (recommended, and required by some browsers for voices to load):
+## Install
 
 ```sh
-# any static server works, e.g.:
-python3 -m http.server 8000
+pip install ./                # from a clone of this repo
+# recommended: ffmpeg for m4b/mp3 assembly
+#   Linux: apt install ffmpeg     macOS: brew install ffmpeg
 ```
 
-Then visit <http://localhost:8000>.
+Optional engines:
+
+```sh
+pip install piper-tts         # offline neural voices
+apt install espeak-ng         # instant preview voice (brew install espeak-ng on macOS)
+```
 
 ## Usage
 
-1. Type or paste text into the box (or click **Sample text**).
-2. Pick a voice and adjust speed, pitch, and volume to taste.
-3. Press **Speak** — follow along with the live word highlighting.
-4. Use **Pause**/**Resume** and **Stop** to control playback.
+**1. Check how your book will be split** (no audio generated):
 
-## Browser support
+```sh
+voiceover chapters mybook.md
+```
 
-Works in any browser that implements the Web Speech API's speech synthesis:
-Chrome, Edge, Safari (desktop and iOS), and Firefox. Available voices vary by
-operating system and browser — Chrome typically offers the largest selection.
+**2. Pick a voice:**
 
-## Project structure
+```sh
+voiceover voices -l en                # list English edge voices
+voiceover preview "How does this voice sound?" --voice en-GB-RyanNeural
+```
+
+**3. Build the audiobook:**
+
+```sh
+voiceover build mybook.md -o audiobook --voice en-GB-RyanNeural --m4b --author "Jane Doe"
+```
+
+You get one MP3 per chapter plus `mybook.m4b` — a single audiobook file with
+chapter navigation that works in Apple Books, Audiobookshelf, Plex, and most
+audiobook apps.
+
+### Input formats
+
+- **Markdown file** — `#`/`##` headings become chapters; deeper headings stay
+  inside their chapter.
+- **Plain-text file** — lines like `Chapter 3`, `PART II: Exile`, `Epilogue`
+  become chapter breaks; if none are found, the whole file is one chapter.
+- **Directory** — each `.txt`/`.md` file becomes a chapter, in filename order
+  (`01_intro.md`, `02_departure.md`, …).
+
+### Offline narration with Piper
+
+```sh
+pip install piper-tts
+python -m piper.download_voices en_US-lessac-medium --data-dir ./voices
+voiceover build mybook.md --engine piper --voice en_US-lessac-medium --model-dir ./voices --m4b
+```
+
+Browse voice samples at <https://rhasspy.github.io/piper-samples/>.
+
+### Handy options
+
+| Option | Meaning |
+|---|---|
+| `--rate 1.25` | narrate 25 % faster |
+| `--single` | also merge all chapters into one file |
+| `--no-resume` | ignore cached chunks and re-render everything |
+| `--max-chunk-chars 1200` | smaller synthesis chunks |
+| `--title` / `--author` | audiobook metadata |
+
+Interrupted? Just re-run the same command — finished chunks are reused.
+
+## Web demo
+
+The `web/` folder contains a zero-dependency browser text-to-speech app
+(Web Speech API): live word-highlighting, voice/rate/pitch controls, dark
+mode. Open `web/index.html` in a browser, or serve the folder statically.
+It plays text aloud but cannot export audio files — that's what the CLI
+is for.
+
+## Development
+
+```sh
+pip install -e .
+python -m unittest discover -s tests
+```
+
+Project layout:
 
 ```
-index.html   — page markup
-styles.css   — styling (dark/light themes)
-app.js       — speech logic, highlighting, settings persistence
+src/voiceover/
+  cli.py         command-line interface
+  chapters.py    chapter detection (markdown + plain text + directories)
+  chunking.py    sentence-aware text chunking
+  book.py        build pipeline (synthesis, caching/resume, assembly)
+  audio.py       concat, conversion, m4b chaptering (ffmpeg + fallbacks)
+  engines/       edge / piper / espeak backends
+web/             browser TTS demo
+tests/           unit tests (no network needed)
 ```
+
+## Notes
+
+- The `edge` engine uses Microsoft Edge's public read-aloud service. It's
+  free and needs no key, but it is an online service — for guaranteed
+  offline/private narration, or very large volumes, use `piper`.
+- Only narrate texts you have the rights to convert.
 
 ## License
 
