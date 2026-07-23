@@ -37,7 +37,8 @@ def _narrator_profile(args: argparse.Namespace) -> VoiceProfile:
     # --voice may name a saved voice-bank profile; the profile then
     # defines the whole narrator setup (engine, voice, rate, volume).
     if args.voice:
-        bank = load_bank(getattr(args, "bank", None))
+        bank_path = getattr(args, "bank", None)
+        bank = load_bank(bank_path, required=bank_path is not None)
         if args.voice in bank:
             return bank[args.voice]
     return VoiceProfile(
@@ -54,7 +55,8 @@ def _load_cast(args: argparse.Namespace) -> Cast | None:
     cast_path = getattr(args, "cast", None)
     if not cast_path and not getattr(args, "multi_voice", False):
         return None
-    bank = load_bank(getattr(args, "bank", None))
+    bank_path = getattr(args, "bank", None)
+    bank = load_bank(bank_path, required=bank_path is not None)
     narrator = _narrator_profile(args)
     cast = Cast.load(
         Path(cast_path) if cast_path else None,

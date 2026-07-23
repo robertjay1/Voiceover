@@ -107,9 +107,18 @@ class VoiceProfile:
 # ---------- Voice bank ----------
 
 
-def load_bank(path: Path | None = None) -> dict[str, VoiceProfile]:
+def load_bank(path: Path | None = None, required: bool = False) -> dict[str, VoiceProfile]:
+    """Load a voice bank. A missing default bank is simply empty, but a
+    bank the user explicitly named must exist (required=True) — silently
+    continuing would resolve profile names as literal voice names."""
     bank_path = Path(path or DEFAULT_BANK_PATH).expanduser()
     if not bank_path.is_file():
+        if required:
+            raise EngineError(
+                f"Voice bank file not found: {bank_path}\n"
+                "Check the filename (downloads are often saved as "
+                "'voicebank (1).json') and the folder you're running from."
+            )
         return {}
     data = json.loads(bank_path.read_text(encoding="utf-8"))
     return {name: VoiceProfile(**profile) for name, profile in data.items()}
@@ -132,6 +141,15 @@ def _profile_from_spec(spec, bank: dict[str, VoiceProfile], default_engine: str)
     if isinstance(spec, str):
         if spec in bank:
             return bank[spec]
+        # Edge voice names look like en-GB-RyanNeural; a dashless string
+        # that isn't in the bank is almost certainly a bank-name typo (or
+        # a bank that failed to load) — fail now, not after synthesis.
+        if default_engine == "edge" and "-" not in spec:
+            known = ", ".join(sorted(bank)) or "(bank is empty)"
+            raise EngineError(
+                f"Voice {spec!r} is not in the voice bank and doesn't look "
+                f"like an engine voice name.\nBank profiles available: {known}"
+            )
         return VoiceProfile(engine=default_engine, voice=spec)
     raise EngineError(f"Unrecognized voice spec: {spec!r}")
 

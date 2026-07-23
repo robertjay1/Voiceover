@@ -21,6 +21,23 @@ class TestBank(unittest.TestCase):
     def test_missing_bank_is_empty(self):
         self.assertEqual(load_bank(Path("/nonexistent/bank.json")), {})
 
+    def test_missing_bank_raises_when_required(self):
+        from voiceover.engines.base import EngineError
+
+        with self.assertRaises(EngineError):
+            load_bank(Path("/nonexistent/bank.json"), required=True)
+
+    def test_unknown_bank_name_in_cast_raises(self):
+        import json as _json
+        from voiceover.engines.base import EngineError
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cast_path = Path(tmp) / "cast.json"
+            cast_path.write_text(_json.dumps({"Elias": "narrator"}))
+            with self.assertRaises(EngineError):
+                Cast.load(cast_path, {}, "edge",
+                          VoiceProfile(engine="edge", voice="en-GB-RyanNeural"))
+
 
 class TestCast(unittest.TestCase):
     def _narrator(self):
