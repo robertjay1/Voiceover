@@ -28,13 +28,23 @@ def _percent(value: float) -> str:
 class EdgeEngine(TTSEngine):
     extension = "mp3"
 
-    def __init__(self, voice: str | None = None, rate: float = 1.0, volume: float = 1.0):
+    def __init__(
+        self,
+        voice: str | None = None,
+        rate: float = 1.0,
+        volume: float = 1.0,
+        pitch: float = 1.0,
+    ):
         self.voice = voice or DEFAULT_VOICE
         self.rate = _percent(rate)
         self.volume = _percent(volume)
+        # 1.0-centred multiplier -> Hz offset (speech f0 is ~120-220 Hz,
+        # so 0.1 ≈ 15 Hz reads as a clearly different-but-same-accent voice).
+        self.pitch = f"{round((pitch - 1.0) * 150):+d}Hz"
 
     def describe(self) -> str:
-        return f"edge ({self.voice}, rate {self.rate})"
+        extras = f", pitch {self.pitch}" if self.pitch != "+0Hz" else ""
+        return f"edge ({self.voice}, rate {self.rate}{extras})"
 
     def synthesize(self, text: str, out_path: Path) -> None:
         try:
@@ -49,7 +59,8 @@ class EdgeEngine(TTSEngine):
                 time.sleep(RETRY_DELAY * 2 ** (attempt - 1))
             try:
                 communicate = edge_tts.Communicate(
-                    text, self.voice, rate=self.rate, volume=self.volume
+                    text, self.voice, rate=self.rate, volume=self.volume,
+                    pitch=self.pitch,
                 )
                 asyncio.run(communicate.save(str(tmp_path)))
                 if not tmp_path.exists() or tmp_path.stat().st_size == 0:

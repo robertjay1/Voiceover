@@ -76,16 +76,19 @@ class VoiceProfile:
     model_dir: str | None = None
     sample: str | None = None  # reference recording for cloned voices
     exaggeration: float | None = None  # chatterbox expressiveness (0..1)
+    pitch: float = 1.0  # 1.0-centred multiplier (edge engine only)
 
     def key(self) -> str:
         """Stable identity used in chunk cache filenames."""
-        raw = f"{self.engine}:{self.voice}:{self.rate}:{self.volume}:{self.sample}"
+        raw = (f"{self.engine}:{self.voice}:{self.rate}:{self.volume}:"
+               f"{self.sample}:{self.pitch}")
         return re.sub(r"[^\w+-]+", "_", raw)
 
     def create(self) -> TTSEngine:
         options: dict = {"voice": self.voice, "rate": self.rate}
         if self.engine == "edge":
             options["volume"] = self.volume
+            options["pitch"] = self.pitch
         if self.engine == "piper":
             options["model_dir"] = self.model_dir
         if self.engine == "chatterbox":

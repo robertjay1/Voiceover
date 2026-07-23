@@ -1,6 +1,35 @@
 import unittest
 
-from voiceover.dialogue import NARRATOR, segment_dialogue, speaker_stats
+from voiceover.dialogue import NARRATOR, merge_aliases, segment_dialogue, speaker_stats
+
+
+class TestAliasMerging(unittest.TestCase):
+    def test_title_variants_merge(self):
+        canon = merge_aliases({"Rehman", "DC Rehman", "Dr Voss", "Voss"})
+        self.assertEqual(canon["DC Rehman"], "Rehman")
+        self.assertEqual(canon["Dr Voss"], "Voss")
+
+    def test_first_name_folds_into_unique_full_name(self):
+        canon = merge_aliases({"Brent", "Brent Kowalski"})
+        self.assertEqual(canon["Brent"], "Brent Kowalski")
+
+    def test_ambiguous_short_name_not_merged(self):
+        canon = merge_aliases({"Rob", "Rob Marsh", "Rob Vale"})
+        self.assertEqual(canon["Rob"], "Rob")
+
+    def test_descriptors_untouched(self):
+        canon = merge_aliases({"the agency lad", "the old man"})
+        self.assertEqual(canon["the agency lad"], "the agency lad")
+
+    def test_distinct_people_stay_distinct(self):
+        canon = merge_aliases({"James", "Jess", "Marsh"})
+        self.assertEqual(len(set(canon.values())), 3)
+
+    def test_segments_use_canonical_names(self):
+        text = ('"Ready when you are," said DC Rehman.\n\n'
+                '"One moment," said Rehman.')
+        speakers = {s.speaker for s in segment_dialogue(text) if s.is_dialogue}
+        self.assertEqual(speakers, {"Rehman"})
 
 
 def speakers_of(segments):

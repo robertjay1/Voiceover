@@ -107,7 +107,8 @@ _NAME_STOPWORDS = frozenset("""
     By In On Of To From With As Out Up Down Over Under Into Onto What
     Who Whom Whose Why How Where Which Chapter Part Prologue Epilogue
     Mr Mrs Ms Dr Miss Sir Madam Lady Lord One Two Three Four Five Six
-    Seven Eight Nine Ten First Second Third Last Next Every Each Some
+    Seven Eight Nine Ten First Second Third Fourth Fifth Sixth Seventh
+    Eighth Ninth Tenth Last Next Every Each Some
     Any All Both Few Many Much More Most Other Another Such Same New
     Old Good Great Little Long Small Every Never Always Soon Suddenly
     Finally Perhaps Maybe Meanwhile Outside Inside Above Below Beyond
@@ -131,8 +132,21 @@ class Segment:
         return self.speaker != NARRATOR
 
 
+# Words a descriptor should never end on — regex overreach like
+# "a voice at [the door]" or "a [nurse] had [seen]" gets trimmed back.
+_TRAILING_JUNK = frozenset("""
+    at in on by of to from with near into onto over under and or but
+    had has have was were is are be been did does would could should
+    who which that as when while then there
+""".split())
+
+
 def _normalize_speaker(raw: str) -> str:
-    return re.sub(r"\s+", " ", raw).strip(" ,.;:—-")
+    name = re.sub(r"\s+", " ", raw).strip(" ,.;:—-")
+    tokens = name.split()
+    while tokens and tokens[-1].lower() in _TRAILING_JUNK:
+        tokens.pop()
+    return " ".join(tokens)
 
 
 # Sentence-initial pronouns are capitalized and would otherwise pass as
@@ -156,8 +170,12 @@ def _match_attribution(patterns, text: str) -> str | None:
         if name:
             name = _normalize_speaker(name)
             lowered = name.lower()
-            if lowered in _NONSPEAKERS:
+            if not name or lowered in _NONSPEAKERS:
                 continue  # not an attribution at all
+            if lowered in ("a", "an", "the", "his", "her", "their", "my", "our"):
+                continue  # descriptor reduced to a bare determiner
+            if name in _NAME_STOPWORDS:
+                continue  # "And Gary said" must not attribute to "And"
             if lowered in _PRONOUN_WORDS:
                 pronoun, name = name, None
             else:
@@ -171,6 +189,60 @@ def _match_attribution(patterns, text: str) -> str | None:
 def _strip_possessive(word: str) -> str:
     """'Ray’s' -> 'Ray' — a possessive mention still refers to the person."""
     return re.sub(r"[’']s$", "", word)
+
+
+# Leading words that vary between mentions of the same person.
+_ALIAS_TITLE_WORDS = frozenset("""
+    mr mrs ms mx dr miss sir lady lord dame professor prof captain
+    sergeant major colonel general admiral father mother brother sister
+    aunt uncle madame madam monsieur king queen prince princess doctor
+    officer detective agent judge nurse coach
+    dc ds di dci pc wpc sgt insp supt const
+""".split())
+
+
+def _title_stripped(name: str) -> str:
+    tokens = name.split()
+    while tokens and tokens[0].rstrip(".").lower() in _ALIAS_TITLE_WORDS:
+        tokens = tokens[1:]
+    return " ".join(tokens)
+
+
+def merge_aliases(names: set[str]) -> dict[str, str]:
+    """Map each speaker name to a canonical form, so 'DC Rehman' and
+    'Rehman', or 'Brent' and 'Brent Kowalski', share one voice.
+
+    Two rules: titles are noise ('Dr Rob' == 'Rob'), and a lone name
+    that appears as a token of exactly one longer name is that person
+    ('Brent' == 'Brent Kowalski'). Descriptors ('the old man') are
+    left alone.
+    """
+    canonical: dict[str, str] = {}
+    by_base: dict[str, list[str]] = {}
+    for name in names:
+        if name == NARRATOR or (name and name[0].islower()):
+            canonical[name] = name
+            continue
+        base = _title_stripped(name) or name
+        by_base.setdefault(base.lower(), []).append(name)
+
+    for group in by_base.values():
+        target = min(group, key=len)  # "Rehman" over "DC Rehman"
+        for name in group:
+            canonical[name] = target
+
+    # Lone first/last names fold into a unique longer match.
+    values = set(canonical.values())
+    for short in [v for v in values if " " not in v and v[:1].isupper()]:
+        matches = [
+            v for v in values
+            if " " in v and short in _title_stripped(v).split()
+        ]
+        if len(matches) == 1:
+            for name, canon in canonical.items():
+                if canon == short:
+                    canonical[name] = matches[0]
+    return canonical
 
 
 def _collect_characters(text: str) -> set[str]:
@@ -197,8 +269,28 @@ def _collect_characters(text: str) -> set[str]:
     lowercased = set(_LOWER_WORD.findall(text))
     for word, count in capitalized.items():
         if count >= 2 and word.lower() not in lowercased and word not in _NAME_STOPWORDS:
-            characters.add(word)
+            if not _looks_like_place(word, outside_quotes):
+                characters.add(word)
     return characters
+
+
+_PLACE_PREPOSITIONS = (
+    "in|at|to|from|near|into|onto|through|across|toward|towards|around"
+    "|outside|inside|behind|beyond|along|past|down|up|off|via|of"
+)
+
+
+def _looks_like_place(word: str, text: str) -> bool:
+    """People act; places get gone to. A proper noun whose occurrences
+    mostly follow a preposition ('in Kamloops', 'at the Tramways') is a
+    location and must never soak up unattributed dialogue."""
+    occurrences = re.findall(
+        rf"(\b(?:{_PLACE_PREPOSITIONS})\s+(?:the\s+)?)?{re.escape(word)}\b", text
+    )
+    if not occurrences:
+        return False
+    after_preposition = sum(1 for prefix in occurrences if prefix)
+    return after_preposition / len(occurrences) > 0.5
 
 
 class _Context:
@@ -315,17 +407,23 @@ def segment_dialogue(text: str) -> list[Segment]:
     synthesizer gets fewer, longer, more natural runs.
     """
     context = _Context(_collect_characters(text))
-    segments: list[Segment] = []
+    raw: list[Segment] = []
     for paragraph in re.split(r"\n\s*\n", text):
         paragraph = paragraph.strip()
         if not paragraph:
             continue
-        for segment in _paragraph_segments(paragraph, context):
-            if segments and segments[-1].speaker == segment.speaker:
-                joiner = "\n\n" if segments[-1].text.endswith((".", "!", "?", "…")) else " "
-                segments[-1].text = f"{segments[-1].text}{joiner}{segment.text}"
-            else:
-                segments.append(segment)
+        raw.extend(_paragraph_segments(paragraph, context))
+
+    # Fold aliases ('DC Rehman' -> 'Rehman') before merging neighbors.
+    canonical = merge_aliases({s.speaker for s in raw})
+    segments: list[Segment] = []
+    for segment in raw:
+        segment.speaker = canonical.get(segment.speaker, segment.speaker)
+        if segments and segments[-1].speaker == segment.speaker:
+            joiner = "\n\n" if segments[-1].text.endswith((".", "!", "?", "…")) else " "
+            segments[-1].text = f"{segments[-1].text}{joiner}{segment.text}"
+        else:
+            segments.append(segment)
     return segments
 
 

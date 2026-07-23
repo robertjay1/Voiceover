@@ -46,6 +46,7 @@ def _narrator_profile(args: argparse.Namespace) -> VoiceProfile:
         rate=args.rate,
         volume=getattr(args, "volume", 1.0),
         model_dir=getattr(args, "model_dir", None),
+        pitch=getattr(args, "pitch", 1.0),
     )
 
 
@@ -205,6 +206,7 @@ def cmd_bank(args: argparse.Namespace) -> int:
             volume=args.volume,
             model_dir=args.model_dir,
             sample=str(Path(args.sample).expanduser().resolve()) if args.sample else None,
+            pitch=args.pitch,
         )
         path = save_bank(bank, bank_path)
         print(f"Saved '{args.name}' ({bank[args.name].label()}) to {path}")
@@ -291,6 +293,8 @@ def build_parser() -> argparse.ArgumentParser:
                        help="speaking speed multiplier, e.g. 1.2 (default: 1.0)")
         p.add_argument("--volume", type=float, default=1.0,
                        help="volume multiplier (edge engine only)")
+        p.add_argument("--pitch", type=float, default=1.0,
+                       help="pitch multiplier, e.g. 1.1 higher / 0.9 lower (edge only)")
         p.add_argument("--model-dir", default=None,
                        help="directory containing Piper .onnx voice models")
         p.add_argument("--bank", default=None,
@@ -358,6 +362,8 @@ def build_parser() -> argparse.ArgumentParser:
     b_add.add_argument("--model-dir", default=None, help="piper model directory")
     b_add.add_argument("--sample", default=None,
                        help="reference recording for a cloned (chatterbox) voice")
+    b_add.add_argument("--pitch", type=float, default=1.0,
+                       help="pitch multiplier (edge engine only)")
     b_add.set_defaults(func=cmd_bank)
     b_remove = bank_sub.add_parser("remove", help="delete a voice profile")
     b_remove.add_argument("name")
@@ -392,6 +398,9 @@ def main(argv: list[str] | None = None) -> int:
         print("\nInterrupted — progress is saved; re-run the same command to resume.",
               file=sys.stderr)
         return 130
+    except BrokenPipeError:
+        # Output piped into head/less that closed early — not an error.
+        return 0
 
 
 if __name__ == "__main__":
