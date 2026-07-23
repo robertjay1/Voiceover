@@ -74,6 +74,38 @@ class TestAlternation(unittest.TestCase):
         self.assertEqual(segments[-1].speaker, "Elias")
 
 
+class TestHardAttribution(unittest.TestCase):
+    def test_far_subject_with_relative_clause(self):
+        text = ('James, who was tired and ten years into the habit of waiting, '
+                'said, "Whenever you’re ready."')
+        segments = [s for s in segment_dialogue(text) if s.is_dialogue]
+        self.assertEqual(segments[0].speaker, "James")
+
+    def test_far_subject_blocked_by_sentence_boundary(self):
+        # The name opens a *different* sentence, so it must not claim the verb.
+        text = 'James left early. Someone said, "Goodbye."'
+        segments = [s for s in segment_dialogue(text) if s.is_dialogue]
+        self.assertNotEqual(segments[0].speaker if segments else None, "James")
+
+    def test_nobody_is_not_a_speaker(self):
+        text = ('"Fine," said Marsh.\n\nNobody said anything for a while.\n\n'
+                '"He wasn’t wrong, then," she said.')
+        segments = [s for s in segment_dialogue(text) if s.is_dialogue]
+        self.assertNotIn("Nobody", [s.speaker for s in segments])
+
+    def test_possessive_mention_resolves_to_base_name(self):
+        text = ('Marsh studied Ray’s handwriting. Ray’s desk was untouched.\n\n'
+                '"This is recent," he said.')
+        segments = [s for s in segment_dialogue(text) if s.is_dialogue]
+        # "he" resolves to a real character, not the possessive form.
+        self.assertNotIn("’s", segments[0].speaker)
+
+    def test_capitalized_pronoun_never_becomes_name(self):
+        text = '"Ready?" asked Jess.\n\n"Go," said Marsh.\n\nHe said, "Now."'
+        speakers = {s.speaker for s in segment_dialogue(text)}
+        self.assertNotIn("He", speakers)
+
+
 class TestSegmentation(unittest.TestCase):
     def test_no_dialogue_is_all_narrator(self):
         segments = segment_dialogue("A plain paragraph.\n\nAnother one.")

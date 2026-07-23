@@ -113,6 +113,10 @@ def load_chapters(path: Path) -> list[Chapter]:
 
     if not path.is_file():
         raise FileNotFoundError(f"Input not found: {path}")
+    if path.suffix.lower() == ".epub":
+        from .epub import load_epub_chapters
+
+        return load_epub_chapters(path)
     text = path.read_text(encoding="utf-8", errors="replace")
     is_md = path.suffix.lower() in {".md", ".markdown"}
     return split_chapters(text, markdown=is_md)

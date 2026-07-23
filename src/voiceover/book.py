@@ -233,6 +233,12 @@ def build_audiobook(
 
 
 def _title_from_input(input_path: Path, chapters: list[Chapter]) -> str:
+    if input_path.suffix.lower() == ".epub":
+        from .epub import book_title
+
+        title = book_title(input_path)
+        if title:
+            return title
     if input_path.is_dir():
         return input_path.name.replace("_", " ").strip() or "Audiobook"
     stem = input_path.stem.replace("_", " ").strip()

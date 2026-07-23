@@ -61,15 +61,21 @@ _TITLE = (
 # optionally titled.
 _NAME = rf"(?:{_TITLE}\s+)?[A-Z][\w’'-]*(?:\s+[A-Z][\w’'-]*)?"
 
-# "the old man", "his mother", "a voice" — at most two words after the
-# determiner, so we never swallow the rest of the sentence.
-_DESCRIPTOR = r"(?:[Tt]he|[Hh]is|[Hh]er|[Tt]heir|[Mm]y|[Oo]ur|[Aa]n?)\s+(?:[a-z]+\s+)?[a-z]+"
+# "the old man", "his mother", "Denise's mother", "a voice" — at most
+# two words after the determiner/possessive, so we never swallow the
+# rest of the sentence.
+_DESCRIPTOR = (
+    r"(?:(?:[Tt]he|[Hh]is|[Hh]er|[Tt]heir|[Mm]y|[Oo]ur|[Aa]n?"
+    r"|[A-Z][\w’'-]*[’']s)\s+(?:[a-z]+\s+)?[a-z]+)"
+)
 
 _PRONOUN = r"(?:[Hh]e|[Ss]he|[Tt]hey|I|[Ww]e|[Ii]t)"
 
 # Wrapped in a group so the alternation never leaks into the pattern
 # this is embedded in. Group 1: named/descriptor speaker; group 2: pronoun.
-_SUBJECT = rf"(?:({_NAME}|{_DESCRIPTOR})|({_PRONOUN}))"
+# Descriptor is tried first so "Denise's mother" wins over the bare
+# possessive "Denise's" that the name pattern would grab.
+_SUBJECT = rf"(?:({_DESCRIPTOR}|{_NAME})|({_PRONOUN}))"
 
 # After a quote: `said Elias`, `Elias said`, `the old man growled`.
 _AFTER_VERB_SUBJ = re.compile(rf"^[\s,;—-]{{0,4}}(?:{_SPEECH_VERBS})\s+{_SUBJECT}")
@@ -78,6 +84,14 @@ _AFTER_SUBJ_VERB = re.compile(rf"^[\s,;—-]{{0,4}}{_SUBJECT}\s+(?:{_SPEECH_VERB
 # Before a quote: `Elias said,`, `said Elias:`, `the old man growled —`.
 _BEFORE_SUBJ_VERB = re.compile(rf"{_SUBJECT}\s+(?:{_SPEECH_VERBS})[,:\s—-]{{0,4}}$")
 _BEFORE_VERB_SUBJ = re.compile(rf"(?:{_SPEECH_VERBS})\s+{_SUBJECT}[,:\s—-]{{0,4}}$")
+
+# Long-range subject: `James, who was tired and ten years into the habit,
+# said, "..."` — a name opening the clause, the speech verb just before
+# the quote, and no sentence boundary in between. The dummy () keeps the
+# name/pronoun group numbering of the other patterns.
+_BEFORE_FAR_SUBJ = re.compile(
+    rf"(?:^|[.!?…]\s+)({_NAME})()[^.!?…“”\"]*?\s(?:{_SPEECH_VERBS})[,:\s—-]{{0,4}}$"
+)
 
 # Curly or straight double quotes.
 _QUOTE = re.compile(r"“([^”]*)”|\"([^\"]*)\"")
@@ -102,6 +116,8 @@ _NAME_STOPWORDS = frozenset("""
     South East West Monday Tuesday Wednesday Thursday Friday Saturday
     Sunday January February March April May June July August September
     October November December God Lord Heaven Hell Earth Sun Moon
+    Nobody Someone Somebody Everyone Everybody Anyone Anybody Nothing
+    Something Everything
 """.split())
 
 
@@ -119,18 +135,42 @@ def _normalize_speaker(raw: str) -> str:
     return re.sub(r"\s+", " ", raw).strip(" ,.;:—-")
 
 
+# Sentence-initial pronouns are capitalized and would otherwise pass as
+# names ("He said" -> speaker "He").
+_PRONOUN_WORDS = frozenset(["he", "she", "they", "we", "it", "you", "i"])
+
+# "Nobody answered." / "Someone called out." — narration, not attribution.
+_NONSPEAKERS = frozenset([
+    "nobody", "no one", "someone", "somebody", "everyone", "everybody",
+    "anyone", "anybody", "nothing", "something", "everything",
+])
+
+
 def _match_attribution(patterns, text: str) -> str | None:
     """Return a speaker name, "" for a bare pronoun, or None for no match."""
     for pattern in patterns:
         match = pattern.search(text)
-        if match:
-            name, pronoun = match.group(1), match.group(2)
-            if name:
-                return _normalize_speaker(name)
-            if pronoun and pronoun.strip() == "I":
-                return "I"  # first-person narrator-character
-            return ""
+        if not match:
+            continue
+        name, pronoun = match.group(1), match.group(2)
+        if name:
+            name = _normalize_speaker(name)
+            lowered = name.lower()
+            if lowered in _NONSPEAKERS:
+                continue  # not an attribution at all
+            if lowered in _PRONOUN_WORDS:
+                pronoun, name = name, None
+            else:
+                return name
+        if pronoun and pronoun.strip().lower() == "i":
+            return "I"  # first-person narrator-character
+        return ""
     return None
+
+
+def _strip_possessive(word: str) -> str:
+    """'Ray’s' -> 'Ray' — a possessive mention still refers to the person."""
+    return re.sub(r"[’']s$", "", word)
 
 
 def _collect_characters(text: str) -> set[str]:
@@ -145,10 +185,15 @@ def _collect_characters(text: str) -> set[str]:
     ):
         for match in pattern.finditer(outside_quotes):
             if match.group(1):
-                characters.add(_normalize_speaker(match.group(1)))
+                name = _normalize_speaker(match.group(1))
+                if name.lower() in _NONSPEAKERS or name in _NAME_STOPWORDS:
+                    continue
+                characters.add(name)
 
     # Proper nouns: capitalized at least twice, never seen lowercased.
-    capitalized = Counter(_CAP_WORD.findall(outside_quotes))
+    capitalized = Counter(
+        _strip_possessive(w) for w in _CAP_WORD.findall(outside_quotes)
+    )
     lowercased = set(_LOWER_WORD.findall(text))
     for word, count in capitalized.items():
         if count >= 2 and word.lower() not in lowercased and word not in _NAME_STOPWORDS:
@@ -176,6 +221,7 @@ class _Context:
 
     def scan_narration(self, narration: str) -> None:
         for word in _CAP_WORD.findall(narration):
+            word = _strip_possessive(word)
             if word in self.characters:
                 for bucket in (self.mentions, self.fresh):
                     if word in bucket:
@@ -219,7 +265,9 @@ def _paragraph_segments(paragraph: str, context: _Context) -> list[Segment]:
 
         speaker = _match_attribution((_AFTER_VERB_SUBJ, _AFTER_SUBJ_VERB), tail)
         if speaker is None:
-            speaker = _match_attribution((_BEFORE_SUBJ_VERB, _BEFORE_VERB_SUBJ), head)
+            speaker = _match_attribution(
+                (_BEFORE_SUBJ_VERB, _BEFORE_VERB_SUBJ, _BEFORE_FAR_SUBJ), head
+            )
         attributions.append(speaker)
 
     # Pass 2: a named attribution anywhere in the paragraph claims its
