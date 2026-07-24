@@ -319,7 +319,7 @@ def build_parser() -> argparse.ArgumentParser:
                                         "(see 'voiceover cast') — enables multi-voice")
     p_build.add_argument("--multi-voice", action="store_true",
                          help="detect dialogue and auto-assign a distinct voice per speaker")
-    p_build.add_argument("--turn-gap", type=float, default=0.35,
+    p_build.add_argument("--turn-gap", type=float, default=0.3,
                          help="silence in seconds between speaker turns (default: 0.35)")
     add_engine_args(p_build)
     p_build.set_defaults(func=cmd_build)

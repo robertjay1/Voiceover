@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 from dataclasses import dataclass, field
@@ -82,7 +83,8 @@ def _render_chapter_multivoice(
     framerate: int | None = audio.STD_FRAMERATE if use_ffmpeg else None
 
     for unit_index, (profile, chunk) in enumerate(units, start=1):
-        chunk_file = chunk_dir / f"{unit_index:04d}-{profile.key()[:48]}.wav"
+        digest = hashlib.sha1(chunk.encode("utf-8")).hexdigest()[:8]
+        chunk_file = chunk_dir / f"{unit_index:04d}-{profile.key()[:40]}-{digest}.wav"
         result.chunks_total += 1
         if resume and chunk_file.exists() and chunk_file.stat().st_size > 0:
             result.chunks_reused += 1
@@ -105,22 +107,32 @@ def _render_chapter_multivoice(
             framerate = audio.wav_framerate(chunk_file)
         chunk_files.append(chunk_file)
 
-    # Short breath between speaker turns.
+    # Short breath between speaker turns. A dialogue tag ("said Ray.")
+    # belongs to the line it accompanies, so a gap on both sides of it
+    # chops the flow — suppress the gap adjacent to short narrator tags
+    # and use a briefer one there.
     gap_file = chunk_dir / f"_gap-{framerate}.wav"
+    tag_gap_file = chunk_dir / f"_gap-tag-{framerate}.wav"
     if turn_gap > 0 and not gap_file.exists():
         audio.write_silence(gap_file, turn_gap, framerate)
+        audio.write_silence(tag_gap_file, min(turn_gap, 0.12), framerate)
 
+    def _is_short_tag(profile: VoiceProfile, text: str) -> bool:
+        return profile.key() == narrator_key and len(text.split()) <= 4
+
+    narrator_key = cast.narrator_profile.key()
     sequence: list[Path] = []
-    previous_profile: VoiceProfile | None = None
-    for (profile, _), chunk_file in zip(units, chunk_files):
-        if (
-            turn_gap > 0
-            and previous_profile is not None
-            and profile.key() != previous_profile.key()
-        ):
-            sequence.append(gap_file)
+    prev_profile: VoiceProfile | None = None
+    prev_text: str = ""
+    for (profile, text), chunk_file in zip(units, chunk_files):
+        if turn_gap > 0 and prev_profile is not None and profile.key() != prev_profile.key():
+            # No full turn-gap around a short dialogue tag — just a beat.
+            if _is_short_tag(profile, text) or _is_short_tag(prev_profile, prev_text):
+                sequence.append(tag_gap_file)
+            else:
+                sequence.append(gap_file)
         sequence.append(chunk_file)
-        previous_profile = profile
+        prev_profile, prev_text = profile, text
 
     if use_ffmpeg:
         chapter_wav = chunk_dir / "_chapter.wav"
@@ -143,7 +155,7 @@ def build_audiobook(
     max_chunk_chars: int = 1800,
     resume: bool = True,
     cast: Cast | None = None,
-    turn_gap: float = 0.35,
+    turn_gap: float = 0.3,
     log=print,
 ) -> BuildResult:
     """Render input text into per-chapter audio files, optionally combined.
@@ -199,7 +211,8 @@ def build_audiobook(
 
         chunk_files: list[Path] = []
         for chunk_index, chunk in enumerate(chunks, start=1):
-            chunk_file = chunk_dir / f"{chunk_index:04d}.{ext}"
+            digest = hashlib.sha1(chunk.encode("utf-8")).hexdigest()[:8]
+            chunk_file = chunk_dir / f"{chunk_index:04d}-{digest}.{ext}"
             result.chunks_total += 1
             if resume and chunk_file.exists() and chunk_file.stat().st_size > 0:
                 result.chunks_reused += 1

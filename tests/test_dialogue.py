@@ -1,6 +1,43 @@
 import unittest
 
-from voiceover.dialogue import NARRATOR, merge_aliases, segment_dialogue, speaker_stats
+from voiceover.dialogue import (
+    NARRATOR,
+    merge_aliases,
+    segment_dialogue,
+    speaker_stats,
+    tidy_speech,
+)
+
+
+class TestTidySpeech(unittest.TestCase):
+    def test_trailing_comma_becomes_period(self):
+        self.assertEqual(tidy_speech("Fine,"), "Fine.")
+
+    def test_bare_fragment_gets_period(self):
+        self.assertEqual(tidy_speech("March"), "March.")
+
+    def test_terminal_punctuation_kept(self):
+        self.assertEqual(tidy_speech("Out past the rocks?"), "Out past the rocks?")
+        self.assertEqual(tidy_speech("Stop!"), "Stop!")
+
+    def test_interruption_dash_kept(self):
+        self.assertEqual(tidy_speech("If a fella thought—"), "If a fella thought—")
+
+    def test_semicolon_and_colon_promoted(self):
+        self.assertEqual(tidy_speech("Well now;"), "Well now.")
+
+    def test_trailing_quote_handled(self):
+        self.assertEqual(tidy_speech('he said "hello",'), 'he said "hello".')
+
+    def test_internal_whitespace_collapsed(self):
+        self.assertEqual(tidy_speech("Light the channel\nfirst,"), "Light the channel first.")
+
+    def test_empty_stays_empty(self):
+        self.assertEqual(tidy_speech("   "), "")
+
+    def test_dialogue_segments_are_tidied(self):
+        segments = segment_dialogue('"Fine," said Ray.')
+        self.assertEqual(segments[0].text, "Fine.")
 
 
 class TestAliasMerging(unittest.TestCase):
@@ -40,7 +77,8 @@ class TestAttribution(unittest.TestCase):
     def test_attribution_after_quote(self):
         segments = segment_dialogue('"The tide is turning," said Elias.')
         self.assertEqual(segments[0].speaker, "Elias")
-        self.assertEqual(segments[0].text, "The tide is turning,")
+        # Trailing comma promoted to a full stop for natural intonation.
+        self.assertEqual(segments[0].text, "The tide is turning.")
         self.assertEqual(segments[1].speaker, NARRATOR)
 
     def test_attribution_before_quote(self):

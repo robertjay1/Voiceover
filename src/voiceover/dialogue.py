@@ -132,6 +132,32 @@ class Segment:
         return self.speaker != NARRATOR
 
 
+def tidy_speech(text: str) -> str:
+    """Give an extracted line sentence-final punctuation so a neural
+    voice reads it with a complete intonation contour instead of a
+    hanging one.
+
+    A quote pulled out of "Fine," said Ray. arrives as "Fine," — a
+    trailing comma the engine intones as unfinished, then the audio
+    stops dead. Promoting that comma (or a bare fragment with no mark)
+    to a full stop is the single biggest prosody win for dialogue.
+    Interruptions and trailing-off (— … -) are intentional and kept.
+    """
+    text = " ".join(text.split())
+    if not text:
+        return text
+    # Ignore a trailing closing quote/bracket when judging the ending.
+    stripped = text.rstrip("\"'”’)]}")
+    if not stripped:
+        return text
+    last = stripped[-1]
+    if last in ",;:":
+        return stripped[:-1].rstrip() + "."
+    if last in ".!?…—–-":
+        return text
+    return stripped + "."
+
+
 # Words a descriptor should never end on — regex overreach like
 # "a voice at [the door]" or "a [nurse] had [seen]" gets trimmed back.
 _TRAILING_JUNK = frozenset("""
@@ -387,7 +413,7 @@ def _paragraph_segments(paragraph: str, context: _Context) -> list[Segment]:
             speaker = context.resolve_unattributed() or NARRATOR
         resolved_for_paragraph = resolved_for_paragraph or speaker
 
-        quoted_text = (quote.group(1) or quote.group(2) or "").strip()
+        quoted_text = tidy_speech(quote.group(1) or quote.group(2) or "")
         if quoted_text:
             segments.append(Segment(speaker, quoted_text))
             context.note_speaker(speaker)
