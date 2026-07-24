@@ -302,31 +302,48 @@ def infer_traits(name: str, text: str, name_set: set[str], default_region: str =
     return Traits(gender=gender, age=age, region=region, accent_explicit=explicit, note=note)
 
 
-def group_full_name_aliases(names: list[str], text: str) -> dict[str, str]:
-    """Link a first name and a surname that name the same person, using
-    'First Last' bigrams in the prose (Cody + Dufresne -> one voice).
-
-    Returns each name mapped to a canonical (longest) label.
-    """
+def _full_name_links(names: list[str], text: str) -> list[tuple[str, str]]:
+    """Pairs of detected names that co-occur as a 'First Last' bigram in the
+    prose (Cody + Dufresne, James + Marlowe) — i.e. name the same person."""
     singles = [n for n in names if " " not in n and n[:1].isupper()]
-    canon = {n: n for n in names}
+    links = []
     for a in singles:
         for b in singles:
-            if a is b or a == b:
+            if a == b:
                 continue
-            # "Cody Dufresne" appears in text -> a is first, b is surname.
             if re.search(rf"(?<!\w){re.escape(a)}\s+{re.escape(b)}(?!\w)", text):
-                # Canonical = the surname (what the narration usually uses
-                # for adults), but only merge when the pairing is unique.
-                target = f"{a} {b}"
-                # Prefer an existing detected full name if present, else surname.
-                canon[a] = canon[b] = b if _mostly_surname(b, text) else a
+                links.append((a, b))
+    # Also link a multi-word name to its first/last token if present alone.
+    single_set = set(singles)
+    for n in names:
+        toks = n.split()
+        if len(toks) >= 2:
+            for t in (toks[0], toks[-1]):
+                if t in single_set:
+                    links.append((n, t))
+    return links
+
+
+def group_full_name_aliases(names: list[str], text: str) -> dict[str, str]:
+    """Back-compat helper: map each name to a canonical (longest) label."""
+    parent = {n: n for n in names}
+
+    def find(x):
+        while parent[x] != x:
+            x = parent[x]
+        return x
+
+    for a, b in _full_name_links(names, text):
+        parent[find(b)] = find(a)
+    groups: dict[str, list[str]] = defaultdict(list)
+    for n in names:
+        groups[find(n)].append(n)
+    canon = {}
+    for members in groups.values():
+        target = max(members, key=len)
+        for n in members:
+            canon[n] = target
     return canon
-
-
-def _mostly_surname(word: str, text: str) -> bool:
-    titled = len(re.findall(rf"\b(?:Mr|Mrs|Ms|Dr|Miss|Sir)\.?\s+{re.escape(word)}\b", text))
-    return titled > 0
 
 
 REGION_LABEL = {
@@ -363,7 +380,37 @@ def autocast(
     from .voicebank import slugify
 
     name_set = {s for s in speakers if not s.lower().startswith(("the ", "a ", "an "))}
-    alias_map = group_full_name_aliases(speakers, text)
+
+    # Union-find over full-name links, canonical = most prominent member
+    # (speakers is prominence-ordered, so the lead's dominant form wins and
+    # stays stable across books).
+    parent = {s: s for s in speakers}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    rank = {s: i for i, s in enumerate(speakers)}  # lower = more prominent
+    for a, b in _full_name_links(speakers, text):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb if rank[ra] <= rank[rb] else ra] = ra if rank[ra] <= rank[rb] else rb
+    alias_map = {s: find(s) for s in speakers}
+
+    def resolve_slug(canonical: str) -> str:
+        """Bank key for a character, matching existing series entries by
+        full name, then first name, then surname ('Dr James Marlowe' and
+        'Marlowe' both reuse 'james')."""
+        full = slugify(canonical)
+        if full in bank:
+            return full
+        tokens = [t for t in slugify(canonical).split("-") if t]
+        for tok in ((tokens[0],) if tokens else ()) + ((tokens[-1],) if tokens else ()):
+            if tok in bank:
+                return tok
+        return full
 
     # Voices already committed (narrator + anything in the bank) are reserved.
     reserved = {narrator.voice} | {p.voice for p in bank.values() if p.voice}
@@ -380,7 +427,7 @@ def autocast(
             entries.append(CastEntry(speaker, canonical, base.traits, base.profile, base.reused))
             continue
 
-        slug = slugify(canonical)
+        slug = resolve_slug(canonical)
         if slug in bank:
             entry = CastEntry(speaker, canonical, Traits(), bank[slug], reused=True)
         else:
