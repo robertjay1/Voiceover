@@ -77,6 +77,11 @@ def cmd_build(args: argparse.Namespace) -> int:
 
     cast = _load_cast(args)
     engine = (cast.narrator_profile if cast else _narrator_profile(args)).create()
+
+    from .lexicon import Lexicon, load_lexicon
+    lex_path = getattr(args, "lexicon", None)
+    lexicon = Lexicon(load_lexicon(lex_path, required=lex_path is not None))
+
     result = build_audiobook(
         Path(args.input),
         Path(args.out),
@@ -89,6 +94,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         resume=not args.no_resume,
         cast=cast,
         turn_gap=args.turn_gap,
+        lexicon=lexicon,
     )
 
     print()
@@ -110,38 +116,125 @@ def cmd_build(args: argparse.Namespace) -> int:
 
 
 def cmd_cast(args: argparse.Namespace) -> int:
-    """Analyze speakers and write an editable cast file template."""
+    """Scan characters and auto-assign distinct, trait-matched voices."""
+    from .casting import REGION_LABEL, autocast
+    from .voicebank import DEFAULT_VOICES, save_bank, slugify
+
     chapters = load_chapters(Path(args.input))
     counts: dict[str, int] = {}
+    full_text_parts = []
     for chapter in chapters:
+        full_text_parts.append(chapter.text)
         for speaker, words in speaker_stats(chapter.text).items():
             counts[speaker] = counts.get(speaker, 0) + words
+    text = "\n\n".join(full_text_parts)
 
-    dialogue_speakers = {s: w for s, w in counts.items() if s != NARRATOR}
-    ranked = sorted(dialogue_speakers.items(), key=lambda kv: -kv[1])
+    ranked = sorted(((w, s) for s, w in counts.items() if s != NARRATOR), reverse=True)
+    speakers = [s for _w, s in ranked]
 
-    print(f"Detected {len(ranked)} speaker(s) plus the narrator:\n")
-    narrator_words = counts.get(NARRATOR, 0)
-    print(f"  {'narrator':24s} {narrator_words:8,d} words")
-    for speaker, words in ranked:
-        print(f"  {speaker:24s} {words:8,d} words")
+    if args.engine != "edge":
+        # Auto-matching only knows the edge voice catalogue; fall back to
+        # the old round-robin template for other engines.
+        return _cast_template(args, speakers, counts.get(NARRATOR, 0))
 
+    bank_path = args.bank
+    bank = load_bank(bank_path)  # may be empty; we extend and save it
+    narrator = bank.get("narrator") or VoiceProfile(
+        engine="edge", voice=DEFAULT_VOICES["edge"], rate=0.98
+    )
+    bank.setdefault("narrator", narrator)
+
+    entries = autocast(speakers, text, bank=bank, narrator=narrator,
+                       default_region=args.default_accent)
+
+    # Build the cast file: speaker -> bank slug (so aliases share a voice).
+    cast_data: dict[str, str] = {"narrator": "narrator"}
+    printed: set[str] = set()
+    print(f"Detected {len(speakers)} speaker(s) plus the narrator. "
+          f"Auto-matched voices:\n")
+    print(f"  {'narrator':22s} {narrator.label()}")
+    word_of = {s: w for w, s in ranked}
+    for entry in entries:
+        slug = slugify(entry.canonical)
+        cast_data[entry.speaker] = slug
+        if entry.canonical in printed:
+            continue
+        printed.add(entry.canonical)
+        t = entry.traits
+        desc = []
+        if t.gender:
+            desc.append(t.gender)
+        if t.age and t.age != "adult":
+            desc.append(t.age)
+        if t.region:
+            desc.append(REGION_LABEL.get(t.region, t.region))
+        tag = ", ".join(desc) or "unknown"
+        flag = "  [reused from bank]" if entry.reused else ""
+        note = f"  <- {t.note}" if getattr(t, "note", "") else ""
+        print(f"  {entry.canonical:22s} {entry.profile.label():34s} ({tag}){flag}{note}")
+
+    save_bank(bank, bank_path)
+    out_path = Path(args.out)
+    out_path.write_text(json.dumps(cast_data, indent=2) + "\n", encoding="utf-8")
+    bank_where = Path(bank_path).expanduser() if bank_path else \
+        Path("~/.voiceover/voicebank.json")
+    print(f"\nWrote cast:  {out_path}")
+    print(f"Updated bank: {bank_where}  ({len(bank)} voices)")
+    print("\nEvery character has a distinct voice. Edit the cast file to change "
+          "any of them\n(a value is a bank name, an engine voice, or "
+          '{"voice": "...", "rate": 1.0}), then:')
+    print(f"  voiceover build {args.input} --cast {out_path} "
+          f"--bank {bank_where}")
+    return 0
+
+
+def _cast_template(args: argparse.Namespace, speakers: list[str], narrator_words: int) -> int:
     from .voicebank import DEFAULT_VOICES
 
     pool = AUTO_POOLS.get(args.engine, [])
-    cast_data: dict = {}
     narrator_voice = DEFAULT_VOICES.get(args.engine, "")
-    cast_data["narrator"] = narrator_voice
+    cast_data: dict = {"narrator": narrator_voice}
     available = [v for v in pool if v != narrator_voice]
-    for index, (speaker, _words) in enumerate(ranked):
+    for index, speaker in enumerate(speakers):
         cast_data[speaker] = available[index % len(available)] if available else ""
-
     out_path = Path(args.out)
     out_path.write_text(json.dumps(cast_data, indent=2) + "\n", encoding="utf-8")
-    print(f"\nWrote cast template: {out_path}")
-    print("Edit the voice for each speaker (bank profile names work too), then run:")
-    print(f"  voiceover build {args.input} --cast {out_path}")
+    print(f"Wrote cast template: {out_path}")
     return 0
+
+
+def cmd_pronounce(args: argparse.Namespace) -> int:
+    """Manage the pronunciation dictionary."""
+    from .lexicon import load_lexicon, save_lexicon
+
+    lex_path = args.lexicon
+    lex = load_lexicon(lex_path)
+
+    if args.pronounce_command == "list":
+        if not lex:
+            print("Pronunciation dictionary is empty. Add an entry with:\n"
+                  '  voiceover pronounce add Okoye "oh-KOY-eh"')
+            return 0
+        width = max(len(k) for k in lex)
+        for term, say in sorted(lex.items(), key=lambda kv: kv[0].lower()):
+            print(f"  {term:{width}s}  ->  {say}")
+        return 0
+
+    if args.pronounce_command == "add":
+        lex[args.term] = args.say_as
+        path = save_lexicon(lex, lex_path)
+        print(f'Added "{args.term}" -> "{args.say_as}"  ({path})')
+        return 0
+
+    if args.pronounce_command == "remove":
+        if args.term not in lex:
+            print(f"error: no entry for '{args.term}'.", file=sys.stderr)
+            return 1
+        del lex[args.term]
+        save_lexicon(lex, lex_path)
+        print(f'Removed "{args.term}"')
+        return 0
+    return 2
 
 
 def cmd_clone(args: argparse.Namespace) -> int:
@@ -320,17 +413,36 @@ def build_parser() -> argparse.ArgumentParser:
     p_build.add_argument("--multi-voice", action="store_true",
                          help="detect dialogue and auto-assign a distinct voice per speaker")
     p_build.add_argument("--turn-gap", type=float, default=0.3,
-                         help="silence in seconds between speaker turns (default: 0.35)")
+                         help="silence in seconds between speaker turns (default: 0.3)")
+    p_build.add_argument("--lexicon", default=None,
+                         help="pronunciation dictionary JSON (see 'voiceover pronounce')")
     add_engine_args(p_build)
     p_build.set_defaults(func=cmd_build)
 
     p_cast = sub.add_parser(
-        "cast", help="detect speakers in a book and write a cast file to edit"
+        "cast", help="scan characters and auto-assign distinct matched voices"
     )
-    p_cast.add_argument("input", help="text/markdown file, or directory of chapter files")
+    p_cast.add_argument("input", help="epub/text/markdown file, or directory of chapters")
     p_cast.add_argument("-o", "--out", default="cast.json", help="cast file to write")
     p_cast.add_argument("--engine", choices=ENGINE_NAMES, default="edge")
+    p_cast.add_argument("--bank", default=None,
+                        help="voice bank to read/update (default: ~/.voiceover/voicebank.json)")
+    p_cast.add_argument("--default-accent", default="gb",
+                        help="accent for characters with no cue: gb, us, ca, au, ie (default: gb)")
     p_cast.set_defaults(func=cmd_cast)
+
+    p_pron = sub.add_parser("pronounce", help="manage the pronunciation dictionary")
+    p_pron.add_argument("--lexicon", default=None,
+                        help="dictionary file (default: ~/.voiceover/lexicon.json)")
+    pron_sub = p_pron.add_subparsers(dest="pronounce_command", required=True)
+    pron_sub.add_parser("list", help="show all pronunciations").set_defaults(func=cmd_pronounce)
+    pr_add = pron_sub.add_parser("add", help="add or update a pronunciation")
+    pr_add.add_argument("term", help="the word as written, e.g. Okoye")
+    pr_add.add_argument("say_as", help='phonetic respelling, e.g. "oh-KOY-eh"')
+    pr_add.set_defaults(func=cmd_pronounce)
+    pr_rm = pron_sub.add_parser("remove", help="delete a pronunciation")
+    pr_rm.add_argument("term")
+    pr_rm.set_defaults(func=cmd_pronounce)
 
     p_clone = sub.add_parser(
         "clone",

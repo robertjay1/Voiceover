@@ -55,6 +55,7 @@ def _render_chapter_multivoice(
     max_chunk_chars: int,
     resume: bool,
     result: BuildResult,
+    lexicon,
     log,
 ) -> None:
     """Render one chapter with a different voice per speaker.
@@ -72,7 +73,7 @@ def _render_chapter_multivoice(
         limit = CHUNK_LIMITS.get(profile.engine)
         effective = min(max_chunk_chars, limit) if limit else max_chunk_chars
         for chunk in chunk_text(segment.text, effective):
-            units.append((profile, chunk))
+            units.append((profile, lexicon.apply(chunk) if lexicon else chunk))
 
     speakers = sorted({s.speaker for s in segments if s.is_dialogue})
     if speakers:
@@ -156,6 +157,7 @@ def build_audiobook(
     resume: bool = True,
     cast: Cast | None = None,
     turn_gap: float = 0.3,
+    lexicon=None,
     log=print,
 ) -> BuildResult:
     """Render input text into per-chapter audio files, optionally combined.
@@ -199,7 +201,7 @@ def build_audiobook(
             _render_chapter_multivoice(
                 chapter, chunk_dir, chapter_file, cast, engines,
                 turn_gap=turn_gap, max_chunk_chars=max_chunk_chars,
-                resume=resume, result=result, log=log,
+                resume=resume, result=result, lexicon=lexicon, log=log,
             )
             result.chapter_files.append(chapter_file)
             continue
@@ -207,6 +209,8 @@ def build_audiobook(
         engine_limit = getattr(engine, "preferred_chunk_chars", None)
         effective_chars = min(max_chunk_chars, engine_limit) if engine_limit else max_chunk_chars
         chunks = chunk_text(chapter.text, effective_chars)
+        if lexicon:
+            chunks = [lexicon.apply(c) for c in chunks]
         log(f"[{index}/{len(chapters)}] {chapter.title} — {len(chunks)} chunk(s)")
 
         chunk_files: list[Path] = []

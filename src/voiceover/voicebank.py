@@ -107,6 +107,15 @@ class VoiceProfile:
 # ---------- Voice bank ----------
 
 
+def slugify(name: str) -> str:
+    """Character name -> stable bank key ('DS Anna Okoye' -> 'anna-okoye')."""
+    name = re.sub(r"\b(?:mr|mrs|ms|mx|dr|miss|sir|lady|lord|prof|professor|"
+                  r"dc|ds|di|dci|pc|sgt|detective|constable|sergeant|the|a|an)\b",
+                  " ", name, flags=re.IGNORECASE)
+    slug = re.sub(r"[^\w]+", "-", name.strip().lower()).strip("-")
+    return slug or re.sub(r"[^\w]+", "-", name.strip().lower()).strip("-") or "voice"
+
+
 def load_bank(path: Path | None = None, required: bool = False) -> dict[str, VoiceProfile]:
     """Load a voice bank. A missing default bank is simply empty, but a
     bank the user explicitly named must exist (required=True) — silently
